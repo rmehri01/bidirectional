@@ -3,9 +3,11 @@ use crate::{
     ty::{ExistsVar, ForallVar, Principality, Proposition, Sort, Term, TyVar, Type},
 };
 
-struct TyCtx(Vec<Item>);
+#[derive(Debug, Clone)]
+pub struct TyCtx(Vec<Item>);
 
-enum Item {
+#[derive(Debug, Clone)]
+pub enum Item {
     Decl(TyVar, Sort),
     ExprTyping(Ident, Type, Principality),
     SolvedExists(ExistsVar, Sort, Term),
@@ -14,6 +16,13 @@ enum Item {
 }
 
 impl TyCtx {
+    /// Extend `self` with the given `item`.
+    pub fn extend(&self, item: Item) -> Self {
+        let mut res = self.clone();
+        res.0.push(item);
+        res
+    }
+
     /// Substitute for solved existential variables in `ty`.
     fn apply_to_ty(&self, ty: Type) -> Type {
         match ty {
@@ -102,11 +111,5 @@ impl TyCtx {
             }
             _ => None,
         })
-    }
-
-    /// Γ ⊢ A <:ᴾ B ⊣ ∆, under `self`, check if type `a` is a subtype of `b` with output ctx ∆,
-    /// decomposing head connectives of polarity P
-    fn check_subtype(self, a: Type, b: Type) -> Self {
-        todo!()
     }
 }

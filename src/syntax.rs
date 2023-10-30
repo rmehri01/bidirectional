@@ -1,7 +1,7 @@
 use crate::{pat::Branches, ty::Type};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ident(String);
+pub struct Ident(pub String);
 
 // TODO: should use rc?
 #[derive(Debug, Clone)]

@@ -1,4 +1,6 @@
-use crate::syntax::Ident;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::{context::TyCtx, syntax::Ident};
 
 #[derive(Debug, Clone)]
 pub enum Type {
@@ -22,6 +24,12 @@ impl Type {
             Self::Exists(_, _, _) => Polarity::Positive,
             _ => Polarity::None,
         }
+    }
+
+    /// Γ ⊢ A <:ᴾ B ⊣ ∆, under `tcx`, check if type `self` is a subtype of `other` with output ctx ∆,
+    /// decomposing head connectives of polarity P.
+    fn check_subtype(self, other: Self, tcx: TyCtx) -> TyCtx {
+        todo!()
     }
 }
 
@@ -62,19 +70,10 @@ impl Term {
 #[derive(Debug, Clone)]
 pub struct Proposition(pub Term, pub Term);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Principality {
     Principal,
     NotPrincipal,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ForallVar(String);
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExistsVar(String);
-
-pub enum TyVar {
-    Forall(ForallVar),
-    Exists(ExistsVar),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,4 +101,38 @@ impl Polarity {
             (Polarity::None, Polarity::None) => Polarity::Negative,
         }
     }
+}
+
+static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForallVar(pub String);
+
+impl ForallVar {
+    /// Generate a new, globally unique name.
+    pub fn fresh(prefix: &str) -> Self {
+        Self(format!(
+            "'{prefix}{}",
+            NEXT_ID.fetch_add(1, Ordering::SeqCst)
+        ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistsVar(pub String);
+
+impl ExistsVar {
+    /// Generate a new, globally unique name.
+    pub fn fresh(prefix: &str) -> Self {
+        Self(format!(
+            "'{prefix}{}",
+            NEXT_ID.fetch_add(1, Ordering::SeqCst)
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum TyVar {
+    Forall(ForallVar),
+    Exists(ExistsVar),
 }
