@@ -1,8 +1,8 @@
-use crate::ty::Type;
+use crate::{pat::Branches, ty::Type};
 
 pub struct Ident(String);
 
-enum Expr {
+pub enum Expr {
     Var(Ident),
     Unit,
     Function(Ident, Box<Expr>),
@@ -18,23 +18,9 @@ enum Expr {
 }
 
 // TODO: non empty?
-struct Spine(Vec<Expr>);
+pub struct Spine(Vec<Expr>);
 
-struct Branches(Vec<Branch>);
-
-// TODO: why list of pattern?
-struct Branch(Vec<Pattern>, Expr);
-
-enum Pattern {
-    Var(Ident),
-    Pair(Box<Pattern>, Box<Pattern>),
-    Inj1(Box<Pattern>),
-    Inj2(Box<Pattern>),
-    Nil,
-    Cons(Box<Pattern>, Box<Pattern>),
-}
-
-enum Value {
+pub enum Value {
     Var(Ident),
     Unit,
     Function(Ident, Box<Expr>),

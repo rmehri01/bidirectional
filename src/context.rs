@@ -103,4 +103,10 @@ impl TyCtx {
             _ => None,
         })
     }
+
+    /// Γ ⊢ A <:ᴾ B ⊣ ∆, under `self`, check if type `a` is a subtype of `b` with output ctx ∆,
+    /// decomposing head connectives of polarity P
+    fn check_subtype(self, a: Type, b: Type) -> Self {
+        todo!()
+    }
 }
