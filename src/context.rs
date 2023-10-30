@@ -1,5 +1,6 @@
-use crate::syntax::{
-    ExistsVar, ForallVar, Ident, Principality, Proposition, Sort, Term, TyVar, Type,
+use crate::{
+    syntax::Ident,
+    ty::{ExistsVar, ForallVar, Principality, Proposition, Sort, Term, TyVar, Type},
 };
 
 struct TyCtx(Vec<Item>);
