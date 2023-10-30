@@ -25,12 +25,6 @@ impl Type {
             _ => Polarity::None,
         }
     }
-
-    /// Γ ⊢ A <:ᴾ B ⊣ ∆, under `tcx`, check if type `self` is a subtype of `other` with output ctx ∆,
-    /// decomposing head connectives of polarity P.
-    fn check_subtype(self, other: Self, tcx: TyCtx) -> TyCtx {
-        todo!()
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
