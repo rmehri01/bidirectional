@@ -1,15 +1,16 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    collections::HashSet,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use crate::syntax::Ident;
 
 #[derive(Debug, Clone)]
 pub enum Type {
     Unit,
-    Function(Box<Type>, Box<Type>),
-    Sum(Box<Type>, Box<Type>),
     ForallVar(ForallVar),
     ExistsVar(ExistsVar),
-    Product(Box<Type>, Box<Type>),
+    Binary(Box<Type>, Connective, Box<Type>),
     Forall(Ident, Sort, Box<Type>),
     Exists(Ident, Sort, Box<Type>),
     Implies(Proposition, Box<Type>),
@@ -41,9 +42,7 @@ pub enum Term {
     Unit,
     ForallVar(ForallVar),
     ExistsVar(ExistsVar),
-    Function(Box<Term>, Box<Term>),
-    Sum(Box<Term>, Box<Term>),
-    Product(Box<Term>, Box<Term>),
+    Binary(Box<Term>, Connective, Box<Term>),
 }
 
 impl Term {
@@ -54,11 +53,41 @@ impl Term {
             Self::Unit => Type::Unit,
             Self::ForallVar(f) => Type::ForallVar(f),
             Self::ExistsVar(e) => Type::ExistsVar(e),
-            Self::Function(a, b) => Type::Function(Box::new(a.to_ty()), Box::new(b.to_ty())),
-            Self::Sum(a, b) => Type::Sum(Box::new(a.to_ty()), Box::new(b.to_ty())),
-            Self::Product(a, b) => Type::Product(Box::new(a.to_ty()), Box::new(b.to_ty())),
+            Self::Binary(a, op, b) => Type::Binary(Box::new(a.to_ty()), op, Box::new(b.to_ty())),
         }
     }
+
+    pub fn free_forall_vars(&self) -> HashSet<ForallVar> {
+        match self {
+            Self::Zero | Self::Unit | Self::ExistsVar(_) => HashSet::new(),
+            Self::Succ(t) => t.free_forall_vars(),
+            Self::ForallVar(f) => HashSet::from([f.clone()]),
+            Self::Binary(a, _, b) => {
+                let mut fvs = a.free_forall_vars();
+                fvs.extend(b.free_forall_vars());
+                fvs
+            }
+        }
+    }
+
+    /// t1 # t2, produces true if `self` and `other` have incompatible head constructors
+    pub fn clashes_with(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Zero, Self::Succ(_)) => true,
+            (Self::Succ(_), Self::Zero) => true,
+            (Self::Unit, Self::Binary(_, _, _)) => true,
+            (Self::Binary(_, _, _), Self::Unit) => true,
+            (Self::Binary(_, op1, _), Self::Binary(_, op2, _)) if op1 != op2 => true,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Connective {
+    Function,
+    Sum,
+    Product,
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +128,7 @@ impl Polarity {
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ForallVar(pub String);
 
 impl ForallVar {
@@ -112,7 +141,7 @@ impl ForallVar {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ExistsVar(pub String);
 
 impl ExistsVar {

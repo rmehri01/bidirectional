@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use crate::{
     pat::{Branch, Branches},
     syntax::Ident,
-    ty::{ExistsVar, ForallVar, Principality, Proposition, Sort, Term, TyVar, Type},
+    ty::{Connective, ExistsVar, ForallVar, Principality, Proposition, Sort, Term, TyVar, Type},
 };
 
 #[derive(Debug, Clone)]
@@ -39,16 +39,9 @@ impl TyCtx {
             Type::With(ty, prop) => {
                 Type::With(Box::new(self.apply_to_ty(*ty)), self.apply_to_prop(prop))
             }
-            Type::Function(a, b) => Type::Function(
+            Type::Binary(a, op, b) => Type::Binary(
                 Box::new(self.apply_to_ty(*a)),
-                Box::new(self.apply_to_ty(*b)),
-            ),
-            Type::Sum(a, b) => Type::Sum(
-                Box::new(self.apply_to_ty(*a)),
-                Box::new(self.apply_to_ty(*b)),
-            ),
-            Type::Product(a, b) => Type::Product(
-                Box::new(self.apply_to_ty(*a)),
+                op,
                 Box::new(self.apply_to_ty(*b)),
             ),
             Type::Vec(idx, ty) => {
@@ -80,16 +73,9 @@ impl TyCtx {
                 .find_exists_solution(alpha_hat)
                 .map(|term| self.apply_to_term(term))
                 .unwrap_or(term),
-            Term::Function(a, b) => Term::Function(
+            Term::Binary(a, op, b) => Term::Binary(
                 Box::new(self.apply_to_term(*a)),
-                Box::new(self.apply_to_term(*b)),
-            ),
-            Term::Sum(a, b) => Term::Sum(
-                Box::new(self.apply_to_term(*a)),
-                Box::new(self.apply_to_term(*b)),
-            ),
-            Term::Product(a, b) => Term::Product(
-                Box::new(self.apply_to_term(*a)),
+                op,
                 Box::new(self.apply_to_term(*b)),
             ),
         }
@@ -141,14 +127,14 @@ impl TyCtx {
                 self.branches_cover(expanded, tys, principality)
             }
             // Covers×
-            Some(Type::Product(a1, a2)) => {
+            Some(Type::Binary(a1, Connective::Product, a2)) => {
                 let expanded = branches.expand_pair_pats();
                 tys.push_front(*a2);
                 tys.push_front(*a1);
                 self.branches_cover(expanded, tys, principality)
             }
             // Covers+
-            Some(Type::Sum(a1, a2)) => {
+            Some(Type::Binary(a1, Connective::Sum, a2)) => {
                 let (l, r) = branches.expand_sum_pats();
 
                 let mut l_tys = tys.clone();
@@ -247,7 +233,60 @@ impl TyCtx {
 
     /// Γ / σ ≐ τ : κ ⊣ ∆⊥, unify `term1` and `term2`, taking `self` to ∆ or ⊥
     fn unify(self, term1: Term, term2: Term, sort: Sort) -> MaybeTcx {
-        todo!()
+        match (term1, term2, sort) {
+            // ElimeqUvarRefl
+            (Term::ForallVar(ForallVar(alpha1)), Term::ForallVar(ForallVar(alpha2)), _)
+                if alpha1 == alpha2 =>
+            {
+                MaybeTcx::Valid(self)
+            }
+            // ElimeqZero
+            (Term::Zero, Term::Zero, Sort::Natural) => MaybeTcx::Valid(self),
+            // ElimeqSucc
+            (Term::Succ(s1), Term::Succ(s2), Sort::Natural) => self.unify(*s1, *s2, Sort::Natural),
+            // ElimeqUvarL
+            (Term::ForallVar(alpha), term2, _)
+                if !term2.free_forall_vars().contains(&alpha)
+                    && self.find_forall_solution(&alpha).is_none() =>
+            {
+                MaybeTcx::Valid(self.extend(Item::SolvedForall(alpha, term2)))
+            }
+            // ElimeqUvarL⊥
+            (Term::ForallVar(alpha), term2, _) if term2.free_forall_vars().contains(&alpha) => {
+                MaybeTcx::Bottom
+            }
+            // ElimeqUvarR
+            (term1, Term::ForallVar(alpha), _)
+                if !term1.free_forall_vars().contains(&alpha)
+                    && self.find_forall_solution(&alpha).is_none() =>
+            {
+                MaybeTcx::Valid(self.extend(Item::SolvedForall(alpha, term1)))
+            }
+            // ElimeqUvarR⊥
+            (term1, Term::ForallVar(alpha), _) if term1.free_forall_vars().contains(&alpha) => {
+                MaybeTcx::Bottom
+            }
+            // ElimeqUnit
+            (Term::Unit, Term::Unit, Sort::Monotype) => MaybeTcx::Valid(self),
+            (Term::Binary(a1, op1, b1), Term::Binary(a2, op2, b2), Sort::Monotype)
+                if op1 == op2 =>
+            {
+                let maybe_tcx = self.unify(*a1, *a2, Sort::Monotype);
+                match maybe_tcx {
+                    // ElimeqBin
+                    MaybeTcx::Valid(new_tcx) => {
+                        let new_b1 = new_tcx.apply_to_term(*b1);
+                        let new_b2 = new_tcx.apply_to_term(*b2);
+                        new_tcx.unify(new_b1, new_b2, Sort::Monotype)
+                    }
+                    // ElimeqBinBot
+                    MaybeTcx::Bottom => MaybeTcx::Bottom,
+                }
+            }
+            // ElimeqClash
+            (term1, term2, _) if term1.clashes_with(&term2) => MaybeTcx::Bottom,
+            _ => panic!("unexpected unification pattern for two terms"),
+        }
     }
 }
 
