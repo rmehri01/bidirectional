@@ -1,5 +1,6 @@
 use crate::syntax::Ident;
 
+#[derive(Debug, Clone)]
 pub enum Type {
     Unit,
     Function(Box<Type>, Box<Type>),
@@ -24,6 +25,7 @@ impl Type {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sort {
     Natural,
     Monotype,
@@ -57,6 +59,7 @@ impl Term {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Proposition(pub Term, pub Term);
 
 pub enum Principality {

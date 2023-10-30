@@ -1,7 +1,10 @@
 use crate::{pat::Branches, ty::Type};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ident(String);
 
+// TODO: should use rc?
+#[derive(Debug, Clone)]
 pub enum Expr {
     Var(Ident),
     Unit,
@@ -18,8 +21,10 @@ pub enum Expr {
 }
 
 // TODO: non empty?
+#[derive(Debug, Clone)]
 pub struct Spine(Vec<Expr>);
 
+#[derive(Debug, Clone)]
 pub enum Value {
     Var(Ident),
     Unit,
