@@ -7,10 +7,10 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub struct TyCtx(Vec<Item>);
+struct TyCtx(Vec<Item>);
 
 #[derive(Debug, Clone)]
-pub enum Item {
+enum Item {
     Decl(TyVar, Sort),
     ExprTyping(Ident, Type, Principality),
     SolvedExists(ExistsVar, Sort, Term),
@@ -252,7 +252,7 @@ impl TyCtx {
 }
 
 /// An equality can yield inconsistency, so the resulting [TyCtx] can be valid or ⊥.
-pub enum MaybeTcx {
+enum MaybeTcx {
     Valid(TyCtx),
     Bottom,
 }

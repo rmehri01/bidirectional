@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::{context::TyCtx, syntax::Ident};
+use crate::syntax::Ident;
 
 #[derive(Debug, Clone)]
 pub enum Type {

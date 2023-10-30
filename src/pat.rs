@@ -1,10 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::{
-    context::{Item, MaybeTcx, TyCtx},
-    syntax::{Expr, Ident},
-    ty::{ExistsVar, ForallVar, Principality, Proposition, Sort, Term, TyVar, Type},
-};
+use crate::syntax::{Expr, Ident};
 
 #[derive(Debug, Clone)]
 pub struct Branches(pub VecDeque<Branch>);
