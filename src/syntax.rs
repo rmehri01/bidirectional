@@ -1,12 +1,13 @@
 use crate::subtyping::Polarity;
 
-// TODO: string might not be the best
+pub struct Ident(String);
+
 enum Expr {
-    Var(String),
+    Var(Ident),
     Unit,
-    Function(String, Box<Expr>),
+    Function(Ident, Box<Expr>),
     App(Box<Expr>, Spine),
-    Fix(String, Value),
+    Fix(Ident, Value),
     Annotation(Box<Expr>, Type),
     Pair(Box<Expr>, Box<Expr>),
     Inj1(Box<Expr>),
@@ -26,7 +27,7 @@ struct BranchList(Vec<Branch>);
 struct Branch(Vec<Pattern>, Expr);
 
 enum Pattern {
-    Var(String),
+    Var(Ident),
     Pair(Box<Pattern>, Box<Pattern>),
     Inj1(Box<Pattern>),
     Inj2(Box<Pattern>),
@@ -35,10 +36,10 @@ enum Pattern {
 }
 
 enum Value {
-    Var(String),
+    Var(Ident),
     Unit,
-    Function(String, Box<Expr>),
-    Fix(String, Box<Value>),
+    Function(Ident, Box<Expr>),
+    Fix(Ident, Box<Value>),
     Annotation(Box<Value>, Type),
     Pair(Box<Value>, Box<Value>),
     Inj1(Box<Value>),
@@ -47,14 +48,25 @@ enum Value {
     Cons(Box<Value>, Box<Value>),
 }
 
-enum Type {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForallVar(String);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistsVar(String);
+
+pub enum TyVar {
+    Forall(ForallVar),
+    Exists(ExistsVar),
+}
+
+pub enum Type {
     Unit,
     Function(Box<Type>, Box<Type>),
     Sum(Box<Type>, Box<Type>),
-    Var(String),
+    ForallVar(ForallVar),
+    ExistsVar(ExistsVar),
     Product(Box<Type>, Box<Type>),
-    Forall(String, Sort, Box<Type>),
-    Exists(String, Sort, Box<Type>),
+    Forall(Ident, Sort, Box<Type>),
+    Exists(Ident, Sort, Box<Type>),
     Implies(Proposition, Box<Type>),
     With(Box<Type>, Proposition),
     Vec(Term, Box<Type>),
@@ -70,23 +82,41 @@ impl Type {
     }
 }
 
-enum Sort {
+pub enum Sort {
     Natural,
     Monotype,
 }
 
 /// Terms and monotypes share the same grammar but are distinguished by [Sort].
-enum Term {
+#[derive(Debug, Clone)]
+pub enum Term {
     Zero,
     Succ(Box<Term>),
     Unit,
-    Var(String),
-    Function(Box<Monotype>, Box<Monotype>),
-    Sum(Box<Monotype>, Box<Monotype>),
-    Product(Box<Monotype>, Box<Monotype>),
+    ForallVar(ForallVar),
+    ExistsVar(ExistsVar),
+    Function(Box<Term>, Box<Term>),
+    Sum(Box<Term>, Box<Term>),
+    Product(Box<Term>, Box<Term>),
 }
 
-// TODO: make into its own type?
-type Monotype = Term;
+impl Term {
+    pub fn to_ty(self) -> Type {
+        match self {
+            Self::Zero | Self::Succ(_) => panic!("cannot convert a Natural term to a type"),
+            Self::Unit => Type::Unit,
+            Self::ForallVar(f) => Type::ForallVar(f),
+            Self::ExistsVar(e) => Type::ExistsVar(e),
+            Self::Function(a, b) => Type::Function(Box::new(a.to_ty()), Box::new(b.to_ty())),
+            Self::Sum(a, b) => Type::Sum(Box::new(a.to_ty()), Box::new(b.to_ty())),
+            Self::Product(a, b) => Type::Product(Box::new(a.to_ty()), Box::new(b.to_ty())),
+        }
+    }
+}
 
-struct Proposition(Term, Term);
+pub struct Proposition(pub Term, pub Term);
+
+pub enum Principality {
+    Principal,
+    NotPrincipal,
+}
