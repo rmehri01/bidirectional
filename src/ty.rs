@@ -21,7 +21,32 @@ pub enum Type {
 }
 
 impl Type {
-    fn polarity(&self) -> Polarity {
+    /// Returns `true` if the type is [`Forall`].
+    ///
+    /// [`Forall`]: Type::Forall
+    #[must_use]
+    pub fn is_forall(&self) -> bool {
+        matches!(self, Self::Forall(..))
+    }
+
+    /// Returns `true` if the type is [`Exists`].
+    ///
+    /// [`Exists`]: Type::Exists
+    #[must_use]
+    pub fn is_exists(&self) -> bool {
+        matches!(self, Self::Exists(..))
+    }
+
+    /// Returns `true` if the type is either [`Forall`] or [`Exists`].
+    ///
+    /// [`Forall`]: Type::Forall
+    /// [`Exists`]: Type::Exists
+    #[must_use]
+    pub fn is_quantifier(&self) -> bool {
+        self.is_forall() || self.is_exists()
+    }
+
+    pub fn polarity(&self) -> Polarity {
         match self {
             Self::Forall(_, _, _) => Polarity::Negative,
             Self::Exists(_, _, _) => Polarity::Positive,
@@ -81,6 +106,39 @@ impl Type {
         }
 
         free_vars_with_bound(self, HashSet::new())
+    }
+
+    // TODO: capture avoiding?
+    /// [α̂/α]A, substitute all instances of `this` for `that` in `self`.
+    pub fn substitute(&mut self, this: ForallVar, that: ExistsVar) {
+        match self {
+            Self::Unit => {}
+            Self::ExistsVar(_) => {}
+            Self::ForallVar(var) => {
+                if *var == this {
+                    *self = Self::ExistsVar(that)
+                }
+            }
+            Self::Binary(l, _, r) => {
+                l.substitute(this, that);
+                r.substitute(this, that);
+            }
+            Self::Forall(ident, _, body) => {
+                if ident.0 != this.0 {
+                    body.substitute(this, that);
+                }
+            }
+            Self::Exists(_, _, body) => body.substitute(this, that),
+            Self::Implies(Proposition(t1, t2), ty) | Self::With(ty, Proposition(t1, t2)) => {
+                t1.substitute(this, that);
+                t2.substitute(this, that);
+                ty.substitute(this, that);
+            }
+            Self::Vec(term, ty) => {
+                term.substitute(this, that);
+                ty.substitute(this, that);
+            }
+        }
     }
 }
 
@@ -150,6 +208,25 @@ impl Term {
             _ => false,
         }
     }
+
+    /// [α̂/α]A, substitute all instances of `this` for `that` in `self`.
+    pub fn substitute(&mut self, this: ForallVar, that: ExistsVar) {
+        match self {
+            Self::Zero => {}
+            Self::Succ(t) => t.substitute(this, that),
+            Self::Unit => {}
+            Self::ExistsVar(_) => {}
+            Self::ForallVar(var) => {
+                if *var == this {
+                    *self = Self::ExistsVar(that)
+                }
+            }
+            Self::Binary(l, _, r) => {
+                l.substitute(this, that);
+                r.substitute(this, that);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,12 +256,28 @@ pub enum Polarity {
 }
 
 impl Polarity {
-    pub fn non_positive(&self) -> bool {
-        !matches!(self, Polarity::Positive)
+    /// Returns `true` if the polarity is [`Positive`].
+    ///
+    /// [`Positive`]: Polarity::Positive
+    #[must_use]
+    pub fn is_positive(&self) -> bool {
+        matches!(self, Self::Positive)
     }
 
-    pub fn non_negative(&self) -> bool {
-        !matches!(self, Polarity::Negative)
+    /// Returns `true` if the polarity is [`Negative`].
+    ///
+    /// [`Negative`]: Polarity::Negative
+    #[must_use]
+    pub fn is_negative(&self) -> bool {
+        matches!(self, Self::Negative)
+    }
+
+    pub fn is_non_positive(&self) -> bool {
+        !self.is_positive()
+    }
+
+    pub fn is_non_negative(&self) -> bool {
+        !self.is_negative()
     }
 
     pub fn join(&self, other: Self) -> Self {

@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashSet, VecDeque},
-    iter,
-};
+use std::collections::{HashSet, VecDeque};
 
 use crate::{
     pat::{Branch, Branches},
@@ -27,8 +24,13 @@ enum Entry {
 impl TyCtx {
     /// Extend `self` with the given `entry`.
     fn extend(&self, entry: Entry) -> Self {
+        self.extend_many([entry])
+    }
+
+    /// Extend `self` with the given `entries`.
+    fn extend_many(&self, entries: impl IntoIterator<Item = Entry>) -> Self {
         let mut res = self.clone();
-        res.0.push(entry);
+        res.0.extend(entries);
         res
     }
 
@@ -45,11 +47,11 @@ impl TyCtx {
 
     /// Replaces `this` with `that`.
     fn replace(self, this: Entry, that: Entry) -> Self {
-        self.replace_with_many(this, iter::once(that))
+        self.replace_with_many(this, [that])
     }
 
     /// Replaces `entry` with `entries`.
-    fn replace_with_many(mut self, entry: Entry, entries: impl Iterator<Item = Entry>) -> Self {
+    fn replace_with_many(mut self, entry: Entry, entries: impl IntoIterator<Item = Entry>) -> Self {
         let idx = self
             .0
             .iter()
@@ -157,7 +159,80 @@ impl TyCtx {
     /// Γ ⊢ A <:ᴾ B ⊣ ∆, under `self`, check if type `a` is a subtype of `b` with output ctx ∆,
     /// decomposing head connectives of polarity `p`.
     fn check_subtype(self, a: Type, b: Type, p: Polarity) -> Self {
-        todo!()
+        match (a, b, p) {
+            // <:∀L
+            (Type::Forall(alpha, sort, mut a), b, Polarity::Negative) if !b.is_forall() => {
+                let alpha = ForallVar(alpha.0);
+                let alpha_hat = ExistsVar::fresh("α̂");
+                let marker = Entry::Marker(TyVar::Forall(alpha));
+                let new_tcx = self.extend_many([
+                    marker.clone(),
+                    Entry::Unsolved(TyVar::Exists(alpha_hat), sort),
+                ]);
+                a.substitute(alpha, alpha_hat);
+                new_tcx
+                    .check_subtype(*a, b, Polarity::Negative)
+                    .drop_from(marker)
+            }
+            // <:∀R
+            (a, Type::Forall(beta, sort, b), Polarity::Negative) => {
+                let beta = ForallVar(beta.0);
+                let beta_entry = Entry::Unsolved(TyVar::Forall(beta), sort);
+                self.extend(beta_entry.clone())
+                    .check_subtype(a, *b, Polarity::Negative)
+                    .drop_from(beta_entry)
+            }
+            // <:∃L
+            (Type::Exists(alpha, sort, a), b, Polarity::Positive) => {
+                let alpha = ExistsVar(alpha.0);
+                let alpha_entry = Entry::Unsolved(TyVar::Exists(alpha), sort);
+                self.extend(alpha_entry.clone())
+                    .check_subtype(*a, b, Polarity::Positive)
+                    .drop_from(alpha_entry)
+            }
+            // <:∃R
+            (a, Type::Forall(beta, sort, mut b), Polarity::Positive) if !a.is_exists() => {
+                // TODO: not sure if need to make exists var instead
+                let beta = ForallVar(beta.0);
+                let beta_hat = ExistsVar::fresh("α̂");
+                let marker = Entry::Marker(TyVar::Forall(beta));
+                let new_tcx = self.extend_many([
+                    marker.clone(),
+                    Entry::Unsolved(TyVar::Exists(beta_hat), sort),
+                ]);
+                b.substitute(beta, beta_hat);
+                new_tcx
+                    .check_subtype(a, *b, Polarity::Positive)
+                    .drop_from(marker)
+            }
+            // -+L
+            (a, b, Polarity::Positive)
+                if a.polarity().is_negative() && b.polarity().is_non_positive() =>
+            {
+                self.check_subtype(a, b, Polarity::Negative)
+            }
+            // -+R
+            (a, b, Polarity::Positive)
+                if a.polarity().is_non_positive() && b.polarity().is_negative() =>
+            {
+                self.check_subtype(a, b, Polarity::Negative)
+            }
+            // +-L
+            (a, b, Polarity::Negative)
+                if a.polarity().is_positive() && b.polarity().is_non_negative() =>
+            {
+                self.check_subtype(a, b, Polarity::Positive)
+            }
+            // +-R
+            (a, b, Polarity::Negative)
+                if a.polarity().is_non_negative() && b.polarity().is_positive() =>
+            {
+                self.check_subtype(a, b, Polarity::Positive)
+            }
+            // <:Equiv
+            (a, b, _) if !a.is_quantifier() && !b.is_quantifier() => self.check_tys_equal(a, b),
+            _ => panic!("unexpected pattern when checking subtype"),
+        }
     }
 
     /// Γ ⊢ P ≡ Q ⊣ ∆, under `self`, check that `p` is equivalent to `q` with output ctx ∆.
@@ -326,8 +401,7 @@ impl TyCtx {
                                     Box::new(Term::ExistsVar(alpha_hat2)),
                                 ),
                             ),
-                        ]
-                        .into_iter(),
+                        ],
                     )
                     .instantiate(alpha_hat1, *t1, Sort::Monotype);
 
