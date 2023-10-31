@@ -9,7 +9,7 @@ use crate::{
 #[derive(Debug, Clone)]
 struct TyCtx(Vec<Item>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Item {
     Decl(TyVar, Sort),
     ExprTyping(Ident, Type, Principality),
@@ -24,6 +24,17 @@ impl TyCtx {
         let mut res = self.clone();
         res.0.push(item);
         res
+    }
+
+    /// Drops all items in the context from `item` and onward.
+    fn drop_from(mut self, item: Item) -> Self {
+        let idx = self
+            .0
+            .iter()
+            .position(|it| *it == item)
+            .expect("item to be found in this context");
+        self.0.truncate(idx);
+        self
     }
 
     /// Substitute for solved existential variables in `ty`.
@@ -104,7 +115,104 @@ impl TyCtx {
 
     /// Γ ⊢ A <:ᴾ B ⊣ ∆, under `self`, check if type `a` is a subtype of `b` with output ctx ∆,
     /// decomposing head connectives of polarity P.
-    fn check_subtype(self, a: Type, b: Type) -> TyCtx {
+    fn check_subtype(self, a: Type, b: Type) -> Self {
+        todo!()
+    }
+
+    /// Γ ⊢ P ≡ Q ⊣ ∆, under `self`, check that `p` is equivalent to `q` with output ctx ∆.
+    fn check_props_equal(self, p: Proposition, q: Proposition) -> Self {
+        // ≡PropEq
+        let Proposition(p1, p2) = p;
+        let Proposition(q1, q2) = q;
+        let new_tcx = self.check_equation(p1, q1, Sort::Natural);
+
+        let new_p2 = new_tcx.apply_to_term(p2);
+        let new_q2 = new_tcx.apply_to_term(q2);
+        new_tcx.check_equation(new_p2, new_q2, Sort::Natural)
+    }
+
+    /// Γ ⊢ t1 ≐ t2 : κ ⊣ ∆, check that `term1` equals `term2`, taking `self` to ∆.
+    fn check_equation(self, term1: Term, term2: Term, sort: Sort) -> Self {
+        todo!()
+    }
+
+    /// Γ ⊢ A ≡ B ⊣ ∆, under `self`, check that `a` is equivalent to `b` with output ctx ∆.
+    fn check_tys_equal(self, a: Type, b: Type) -> Self {
+        match (a, b) {
+            // ≡Var
+            (Type::ForallVar(alpha1), Type::ForallVar(alpha2)) if alpha1 == alpha2 => self,
+            // ≡Exvar
+            (Type::ExistsVar(alpha_hat1), Type::ExistsVar(alpha_hat2))
+                if alpha_hat1 == alpha_hat2 =>
+            {
+                self
+            }
+            // ≡Unit
+            (Type::Unit, Type::Unit) => self,
+            // ≡⊕
+            (Type::Binary(a1, op1, a2), Type::Binary(b1, op2, b2)) if op1 == op2 => {
+                let new_tcx = self.check_tys_equal(*a1, *b1);
+
+                let new_a2 = new_tcx.apply_to_ty(*a2);
+                let new_b2 = new_tcx.apply_to_ty(*b2);
+                new_tcx.check_tys_equal(new_a2, new_b2)
+            }
+            // ≡Vec
+            (Type::Vec(t1, a1), Type::Vec(t2, a2)) => {
+                let new_tcx = self.check_terms_equal(t1, t2);
+
+                let new_a1 = new_tcx.apply_to_ty(*a1);
+                let new_a2 = new_tcx.apply_to_ty(*a2);
+                new_tcx.check_tys_equal(new_a1, new_a2)
+            }
+            // ≡∀
+            (Type::Forall(alpha1, sort1, a), Type::Forall(alpha2, sort2, b))
+                if alpha1 == alpha2 && sort1 == sort2 =>
+            {
+                let item = Item::Decl(TyVar::Forall(ForallVar(alpha1.0)), sort1);
+                let new_tcx = self.extend(item.clone());
+                new_tcx.check_tys_equal(*a, *b).drop_from(item)
+            }
+            // ≡∃
+            (Type::Exists(alpha1, sort1, a), Type::Exists(alpha2, sort2, b))
+                if alpha1 == alpha2 && sort1 == sort2 =>
+            {
+                let item = Item::Decl(TyVar::Exists(ExistsVar(alpha1.0)), sort1);
+                let new_tcx = self.extend(item.clone());
+                new_tcx.check_tys_equal(*a, *b).drop_from(item)
+            }
+            // ≡⊃
+            // ≡∧
+            (Type::Implies(p, a), Type::Implies(q, b)) | (Type::With(a, p), Type::With(b, q)) => {
+                let new_tcx = self.check_props_equal(p, q);
+                let new_a = new_tcx.apply_to_ty(*a);
+                let new_b = new_tcx.apply_to_ty(*b);
+                new_tcx.check_tys_equal(new_a, new_b)
+            }
+            // ≡InstantiateL
+            // ≡InstantiateR
+            (Type::ExistsVar(alpha_hat), tau) | (tau, Type::ExistsVar(alpha_hat))
+                if !tau
+                    .clone()
+                    .to_term()
+                    .free_exists_vars()
+                    .contains(&alpha_hat)
+                    && self.find_exists_solution(&alpha_hat).is_none() =>
+            {
+                self.instantiate(alpha_hat, tau.to_term(), Sort::Monotype)
+            }
+            _ => panic!("unexpected pattern for checking that types are equal"),
+        }
+    }
+
+    /// Γ ⊢ A ≡ B ⊣ ∆, under `self`, check that `a` is equivalent to `b` with output ctx ∆.
+    fn check_terms_equal(self, a: Term, b: Term) -> Self {
+        // TODO: not sure if this is just normal equality
+        todo!()
+    }
+
+    /// Γ ⊢ α̂ := t : κ ⊣ ∆, under `self`, instantiate `var` such that `var` = `t` with output ctx ∆.
+    fn instantiate(self, var: ExistsVar, term: Term, sort: Sort) -> Self {
         todo!()
     }
 
@@ -231,7 +339,7 @@ impl TyCtx {
         }
     }
 
-    /// Γ / σ ≐ τ : κ ⊣ ∆⊥, unify `term1` and `term2`, taking `self` to ∆ or ⊥
+    /// Γ / σ ≐ τ : κ ⊣ ∆⊥, unify `term1` and `term2`, taking `self` to ∆ or ⊥.
     fn unify(self, term1: Term, term2: Term, sort: Sort) -> MaybeTcx {
         match (term1, term2, sort) {
             // ElimeqUvarRefl
@@ -268,14 +376,14 @@ impl TyCtx {
             }
             // ElimeqUnit
             (Term::Unit, Term::Unit, Sort::Monotype) => MaybeTcx::Valid(self),
-            (Term::Binary(a1, op1, b1), Term::Binary(a2, op2, b2), Sort::Monotype)
+            (Term::Binary(a1, op1, a2), Term::Binary(b1, op2, b2), Sort::Monotype)
                 if op1 == op2 =>
             {
-                let maybe_tcx = self.unify(*a1, *a2, Sort::Monotype);
+                let maybe_tcx = self.unify(*a1, *b1, Sort::Monotype);
                 match maybe_tcx {
                     // ElimeqBin
                     MaybeTcx::Valid(new_tcx) => {
-                        let new_b1 = new_tcx.apply_to_term(*b1);
+                        let new_b1 = new_tcx.apply_to_term(*a2);
                         let new_b2 = new_tcx.apply_to_term(*b2);
                         new_tcx.unify(new_b1, new_b2, Sort::Monotype)
                     }

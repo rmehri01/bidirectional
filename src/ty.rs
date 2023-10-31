@@ -5,7 +5,7 @@ use std::{
 
 use crate::syntax::Ident;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Unit,
     ForallVar(ForallVar),
@@ -26,6 +26,24 @@ impl Type {
             _ => Polarity::None,
         }
     }
+
+    pub fn to_term(self) -> Term {
+        match self {
+            // TODO: should this be a panic?
+            Type::Forall(_, _, _)
+            | Type::Exists(_, _, _)
+            | Type::Implies(_, _)
+            | Type::With(_, _)
+            | Type::Vec(_, _) => panic!("cannot convert type to a term"),
+            Self::Unit => Term::Unit,
+            Self::ForallVar(f) => Term::ForallVar(f),
+            Self::ExistsVar(e) => Term::ExistsVar(e),
+            Self::Binary(a, op, b) => {
+                Term::Binary(Box::new(a.to_term()), op, Box::new(b.to_term()))
+            }
+            Type::Unit => todo!(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,8 +52,9 @@ pub enum Sort {
     Monotype,
 }
 
+// TODO: combine terms and types?
 /// Terms and monotypes share the same grammar but are distinguished by [Sort].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Term {
     Zero,
     Succ(Box<Term>),
@@ -70,6 +89,18 @@ impl Term {
         }
     }
 
+    pub fn free_exists_vars(&self) -> HashSet<ExistsVar> {
+        match self {
+            Self::Zero | Self::Unit | Self::ForallVar(_) => HashSet::new(),
+            Self::Succ(t) => t.free_exists_vars(),
+            Self::ExistsVar(e) => HashSet::from([e.clone()]),
+            Self::Binary(a, _, b) => {
+                let mut fvs = a.free_exists_vars();
+                fvs.extend(b.free_exists_vars());
+                fvs
+            }
+        }
+    }
     /// t1 # t2, produces true if `self` and `other` have incompatible head constructors
     pub fn clashes_with(&self, other: &Self) -> bool {
         match (self, other) {
@@ -90,9 +121,12 @@ pub enum Connective {
     Product,
 }
 
-#[derive(Debug, Clone)]
+/// An equation, t = t'.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Proposition(pub Term, pub Term);
 
+/// A principal type is a type such that all other types for this term
+/// in this environment are an instance of the principal type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Principality {
     Principal,
@@ -128,6 +162,7 @@ impl Polarity {
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
+// TODO: combine different var types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ForallVar(pub String);
 
@@ -154,7 +189,7 @@ impl ExistsVar {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TyVar {
     Forall(ForallVar),
     Exists(ExistsVar),
