@@ -2,7 +2,7 @@ use std::collections::{HashSet, VecDeque};
 
 use crate::{
     pat::{Branch, Branches},
-    syntax::Ident,
+    syntax::{Expr, Ident, Spine},
     ty::{
         Connective, ExistsVar, ForallVar, Polarity, Principality, Proposition, Sort, Term, TyVar,
         Type,
@@ -136,9 +136,9 @@ impl TyCtx {
         })
     }
 
-    fn find_expr_solution(&self, for_var: &Ident) -> Option<Type> {
+    fn find_expr_solution(&self, for_var: &Ident) -> Option<(Type, Principality)> {
         self.0.iter().find_map(|entry| match entry {
-            Entry::ExprTyping(x, ty, _) if for_var == x => Some(ty.clone()),
+            Entry::ExprTyping(x, ty, p) if for_var == x => Some((ty.clone(), *p)),
             _ => None,
         })
     }
@@ -154,6 +154,127 @@ impl TyCtx {
     // TODO: not sure how necessary this is, seems like overlaps with find_solution?
     fn is_unsolved(&self, var: &TyVar) -> bool {
         self.find_unsolved(var).is_none()
+    }
+
+    /// Γ ⊢ e ==> A p ⊣ ∆, under `self`, expression `expr` synthesizes output type `A` with output context ∆.
+    fn synth(self, expr: Expr) -> (Type, Principality, Self) {
+        match expr {
+            // Var
+            Expr::Var(var) if self.find_expr_solution(&var).is_some() => {
+                let (a, p) = self.find_expr_solution(&var).unwrap();
+                (self.apply_to_ty(a), p, self)
+            }
+            // Anno
+            Expr::Annotation(e, a)
+                if self.principality_well_formed(a.clone(), Principality::Principal) =>
+            {
+                let new_a = self.apply_to_ty(a.clone());
+                let new_tcx = self.check(*e, new_a, Principality::Principal);
+
+                let new_a = new_tcx.apply_to_ty(a);
+                (new_a, Principality::Principal, new_tcx)
+            }
+            // ->E
+            Expr::App(e, s) => {
+                let (a, p, new_tcx) = self.synth(*e);
+                new_tcx.apply_spine_recovering(s, a, p)
+            }
+            _ => panic!("unexpected pattern in synth"),
+        }
+    }
+
+    /// Γ ⊢ e <== A p ⊣ ∆, under `self`, expression `expr` checks against type `ty` with output context ∆.
+    fn check(self, expr: Expr, ty: Type, p: Principality) -> Self {
+        todo!()
+    }
+
+    /// Γ ⊢ s : A p >> C q ⊣ ∆, under `self`, passing spine `s` to a function of type `ty` synthesizes type `C`.
+    fn apply_spine(self, mut s: Spine, ty: Type, p: Principality) -> (Type, Principality, Self) {
+        match (s.0.pop_front(), ty) {
+            // EmptySpine
+            (None, ty) => (ty, p, self),
+            // ∀Spine
+            (Some(e), Type::Forall(alpha, sort, mut a)) => {
+                s.0.push_front(e);
+                let alpha = ForallVar(alpha.0);
+                let alpha_hat = ExistsVar::fresh("α̂");
+                a.substitute(alpha, alpha_hat);
+                self.extend(Entry::Unsolved(TyVar::Exists(alpha_hat), sort))
+                    .apply_spine(s, *a, Principality::NonPrincipal)
+            }
+            // ⊃Spine
+            (Some(e), Type::Implies(prop, a)) => {
+                let new_tcx = self.check_prop(prop);
+
+                s.0.push_front(e);
+                let new_a = new_tcx.apply_to_ty(*a);
+                new_tcx.apply_spine(s, new_a, p)
+            }
+            // ->Spine
+            (Some(e), Type::Binary(a, Connective::Function, b)) => {
+                let new_tcx = self.check(e, *a, p);
+
+                let new_b = new_tcx.apply_to_ty(*b);
+                new_tcx.apply_spine(s, new_b, p)
+            }
+            // α̂Spine
+            (Some(e), Type::ExistsVar(alpha_hat))
+                if self
+                    .0
+                    .contains(&Entry::Unsolved(TyVar::Exists(alpha_hat), Sort::Monotype)) =>
+            {
+                let alpha_hat1 = ExistsVar::fresh("α̂");
+                let alpha_hat2 = ExistsVar::fresh("α̂");
+
+                let new_tcx = self.replace_with_many(
+                    Entry::Unsolved(TyVar::Exists(alpha_hat), Sort::Monotype),
+                    [
+                        Entry::Unsolved(TyVar::Exists(alpha_hat2), Sort::Monotype),
+                        Entry::Unsolved(TyVar::Exists(alpha_hat1), Sort::Monotype),
+                        Entry::SolvedExists(
+                            alpha_hat,
+                            Sort::Monotype,
+                            Term::Binary(
+                                Box::new(Term::ExistsVar(alpha_hat1)),
+                                Connective::Function,
+                                Box::new(Term::ExistsVar(alpha_hat2)),
+                            ),
+                        ),
+                    ],
+                );
+
+                s.0.push_front(e);
+                new_tcx.apply_spine(
+                    s,
+                    Type::Binary(
+                        Box::new(Type::ExistsVar(alpha_hat1)),
+                        Connective::Function,
+                        Box::new(Type::ExistsVar(alpha_hat2)),
+                    ),
+                    Principality::NonPrincipal,
+                )
+            }
+            _ => panic!("unexpected pattern when applying spine"),
+        }
+    }
+
+    /// Γ ⊢ s : A p >> C ⌈q⌉ ⊣ ∆, under `self`, passing spine `s` to a function of type `ty` synthesizes type `C`;
+    /// recovering principality in q if possible.
+    fn apply_spine_recovering(
+        self,
+        s: Spine,
+        ty: Type,
+        p: Principality,
+    ) -> (Type, Principality, Self) {
+        let (c, q, new_tcx) = self.apply_spine(s, ty, p);
+
+        if p.is_principal() && q.is_non_principal() && c.free_exists_vars().is_empty() {
+            // SpineRecover
+            (c, Principality::Principal, new_tcx)
+        } else {
+            // SpinePass
+            (c, q, new_tcx)
+        }
     }
 
     /// Γ ⊢ A <:ᴾ B ⊣ ∆, under `self`, check if type `a` is a subtype of `b` with output ctx ∆,
@@ -529,7 +650,7 @@ impl TyCtx {
     }
 
     /// Γ ⊢ A p type, under `self`, `ty` is well-formed and respects principality `p`.
-    fn principality_well_formed(&self, ty: Type, p: &Principality) -> bool {
+    fn principality_well_formed(&self, ty: Type, p: Principality) -> bool {
         match p {
             // PrincipalWF
             Principality::Principal => {
@@ -541,7 +662,7 @@ impl TyCtx {
     }
 
     /// Γ ⊢ A⃗ p types, under `self`, `tys` are well-formed with principality `p`.
-    fn principalities_well_formed(&self, tys: Vec<Type>, p: &Principality) -> bool {
+    fn principalities_well_formed(&self, tys: Vec<Type>, p: Principality) -> bool {
         // PrincipalTypevecWF
         tys.into_iter()
             .all(|ty| self.principality_well_formed(ty, p))

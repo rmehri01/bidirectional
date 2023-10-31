@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use internment::Intern;
 
 use crate::{pat::Branches, ty::Type};
@@ -24,7 +26,7 @@ pub enum Expr {
 
 // TODO: non empty?
 #[derive(Debug, Clone)]
-pub struct Spine(Vec<Expr>);
+pub struct Spine(pub VecDeque<Expr>);
 
 #[derive(Debug, Clone)]
 pub enum Value {

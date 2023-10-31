@@ -248,6 +248,24 @@ pub enum Principality {
     NonPrincipal,
 }
 
+impl Principality {
+    /// Returns `true` if the principality is [`Principal`].
+    ///
+    /// [`Principal`]: Principality::Principal
+    #[must_use]
+    pub fn is_principal(&self) -> bool {
+        matches!(self, Self::Principal)
+    }
+
+    /// Returns `true` if the principality is [`NonPrincipal`].
+    ///
+    /// [`NonPrincipal`]: Principality::NonPrincipal
+    #[must_use]
+    pub fn is_non_principal(&self) -> bool {
+        matches!(self, Self::NonPrincipal)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Polarity {
     Positive,
