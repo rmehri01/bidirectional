@@ -6,7 +6,10 @@ use std::{
 use crate::{
     pat::{Branch, Branches},
     syntax::Ident,
-    ty::{Connective, ExistsVar, ForallVar, Principality, Proposition, Sort, Term, TyVar, Type},
+    ty::{
+        Connective, ExistsVar, ForallVar, Polarity, Principality, Proposition, Sort, Term, TyVar,
+        Type,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -152,8 +155,8 @@ impl TyCtx {
     }
 
     /// Γ ⊢ A <:ᴾ B ⊣ ∆, under `self`, check if type `a` is a subtype of `b` with output ctx ∆,
-    /// decomposing head connectives of polarity P.
-    fn check_subtype(self, a: Type, b: Type) -> Self {
+    /// decomposing head connectives of polarity `p`.
+    fn check_subtype(self, a: Type, b: Type, p: Polarity) -> Self {
         todo!()
     }
 
@@ -171,7 +174,40 @@ impl TyCtx {
 
     /// Γ ⊢ t1 ≐ t2 : κ ⊣ ∆, check that `term1` equals `term2`, taking `self` to ∆.
     fn check_equation(self, term1: Term, term2: Term, sort: Sort) -> Self {
-        todo!()
+        match (term1, term2, sort) {
+            // CheckeqVar
+            (Term::ForallVar(var1), Term::ForallVar(var2), _) if var1 == var2 => self,
+            (Term::ExistsVar(var1), Term::ExistsVar(var2), _) if var1 == var2 => self,
+            // CheckeqUnit
+            (Term::Unit, Term::Unit, Sort::Monotype) => self,
+            // CheckeqBin
+            (Term::Binary(a1, op1, a2), Term::Binary(b1, op2, b2), Sort::Monotype)
+                if op1 == op2 =>
+            {
+                let new_tcx = self.check_equation(*a1, *b1, Sort::Monotype);
+
+                let new_a2 = new_tcx.apply_to_term(*a2);
+                let new_b2 = new_tcx.apply_to_term(*b2);
+                new_tcx.check_equation(new_a2, new_b2, Sort::Monotype)
+            }
+            // CheckeqZero
+            (Term::Zero, Term::Zero, Sort::Natural) => self,
+            // CheckeqSucc
+            (Term::Succ(t1), Term::Succ(t2), Sort::Natural) => {
+                self.check_equation(*t1, *t2, Sort::Natural)
+            }
+            // CheckeqInstL
+            // CheckeqInstR
+            (Term::ExistsVar(alpha_hat), term, sort) | (term, Term::ExistsVar(alpha_hat), sort)
+                if self
+                    .0
+                    .contains(&Entry::Unsolved(TyVar::Exists(alpha_hat), sort))
+                    && !term.free_exists_vars().contains(&alpha_hat) =>
+            {
+                self.instantiate(alpha_hat, term, sort)
+            }
+            _ => panic!("unexpected pattern for checking term equation"),
+        }
     }
 
     /// Γ ⊢ A ≡ B ⊣ ∆, under `self`, check that `a` is equivalent to `b` with output ctx ∆.
@@ -499,6 +535,20 @@ impl TyCtx {
         }
 
         domain
+    }
+
+    /// Γ ⊢ P true ⊣ ∆, under `self`, check `prop`, with output ctx ∆.
+    fn check_prop(self, prop: Proposition) -> Self {
+        // CheckpropEq
+        let Proposition(t1, t2) = prop;
+        self.check_equation(t1, t2, Sort::Natural)
+    }
+
+    /// Γ / P true ⊣ ∆⊥, incorporate `prop` into `self`, producing output ctx ∆ or ⊥.
+    fn assume_prop(self, prop: Proposition) -> MaybeTcx {
+        // ElimpropEq
+        let Proposition(t1, t2) = prop;
+        self.unify(t1, t2, Sort::Natural)
     }
 
     /// Γ ⊢ Π covers A⃗ q, under the context `self`, check if `branches` cover the types `tys`.

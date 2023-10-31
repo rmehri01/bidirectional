@@ -172,22 +172,22 @@ pub enum Principality {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum Polarity {
+pub enum Polarity {
     Positive,
     Negative,
     None,
 }
 
 impl Polarity {
-    fn non_positive(&self) -> bool {
+    pub fn non_positive(&self) -> bool {
         !matches!(self, Polarity::Positive)
     }
 
-    fn non_negative(&self) -> bool {
+    pub fn non_negative(&self) -> bool {
         !matches!(self, Polarity::Negative)
     }
 
-    fn join(&self, other: Self) -> Self {
+    pub fn join(&self, other: Self) -> Self {
         match (self, other) {
             (Polarity::Positive, _) => Polarity::Positive,
             (Polarity::Negative, _) => Polarity::Negative,
