@@ -3,6 +3,8 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use internment::Intern;
+
 use crate::syntax::Ident;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,7 +82,7 @@ impl Term {
         match self {
             Self::Zero | Self::Unit | Self::ExistsVar(_) => HashSet::new(),
             Self::Succ(t) => t.free_forall_vars(),
-            Self::ForallVar(f) => HashSet::from([f.clone()]),
+            Self::ForallVar(f) => HashSet::from([*f]),
             Self::Binary(a, _, b) => {
                 let mut fvs = a.free_forall_vars();
                 fvs.extend(b.free_forall_vars());
@@ -93,7 +95,7 @@ impl Term {
         match self {
             Self::Zero | Self::Unit | Self::ForallVar(_) => HashSet::new(),
             Self::Succ(t) => t.free_exists_vars(),
-            Self::ExistsVar(e) => HashSet::from([e.clone()]),
+            Self::ExistsVar(e) => HashSet::from([*e]),
             Self::Binary(a, _, b) => {
                 let mut fvs = a.free_exists_vars();
                 fvs.extend(b.free_exists_vars());
@@ -163,29 +165,29 @@ impl Polarity {
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
 // TODO: combine different var types
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ForallVar(pub String);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ForallVar(pub Intern<String>);
 
 impl ForallVar {
     /// Generate a new, globally unique name.
     pub fn fresh(prefix: &str) -> Self {
-        Self(format!(
+        Self(Intern::new(format!(
             "'{prefix}{}",
             NEXT_ID.fetch_add(1, Ordering::SeqCst)
-        ))
+        )))
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ExistsVar(pub String);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExistsVar(pub Intern<String>);
 
 impl ExistsVar {
     /// Generate a new, globally unique name.
     pub fn fresh(prefix: &str) -> Self {
-        Self(format!(
+        Self(Intern::new(format!(
             "'{prefix}{}",
             NEXT_ID.fetch_add(1, Ordering::SeqCst)
-        ))
+        )))
     }
 }
 

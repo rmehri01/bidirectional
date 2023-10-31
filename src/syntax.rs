@@ -1,7 +1,9 @@
+use internment::Intern;
+
 use crate::{pat::Branches, ty::Type};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ident(pub String);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ident(pub Intern<String>);
 
 // TODO: should use rc?
 #[derive(Debug, Clone)]

@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, iter};
 
 use crate::{
     pat::{Branch, Branches},
@@ -7,10 +7,10 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-struct TyCtx(Vec<Item>);
+struct TyCtx(Vec<Entry>);
 
 #[derive(Debug, Clone, PartialEq)]
-enum Item {
+enum Entry {
     Decl(TyVar, Sort),
     ExprTyping(Ident, Type, Principality),
     SolvedExists(ExistsVar, Sort, Term),
@@ -19,22 +19,37 @@ enum Item {
 }
 
 impl TyCtx {
-    /// Extend `self` with the given `item`.
-    fn extend(&self, item: Item) -> Self {
+    /// Extend `self` with the given `entry`.
+    fn extend(&self, entry: Entry) -> Self {
         let mut res = self.clone();
-        res.0.push(item);
+        res.0.push(entry);
         res
     }
 
-    /// Drops all items in the context from `item` and onward.
-    fn drop_from(mut self, item: Item) -> Self {
+    /// Drops all entries in the context from `entry` and onward.
+    fn drop_from(mut self, entry: Entry) -> Self {
         let idx = self
             .0
             .iter()
-            .position(|it| *it == item)
-            .expect("item to be found in this context");
+            .position(|it| *it == entry)
+            .expect("entry should be found in this context");
         self.0.truncate(idx);
         self
+    }
+
+    /// Replaces `this` with `that`.
+    fn replace(self, this: Entry, that: Entry) -> Self {
+        self.replace_many(this, iter::once(that))
+    }
+
+    /// Replaces `entry` with `entries`.
+    fn replace_many(mut self, entry: Entry, entries: impl Iterator<Item = Entry>) -> Self {
+        let idx = self
+            .0
+            .iter()
+            .position(|it| *it == entry)
+            .expect("entry should be found in this context");
+        Self(self.0.splice(idx..=idx, entries).collect())
     }
 
     /// Substitute for solved existential variables in `ty`.
@@ -98,15 +113,15 @@ impl TyCtx {
     }
 
     fn find_forall_solution(&self, for_var: &ForallVar) -> Option<Term> {
-        self.0.iter().find_map(|item| match item {
-            Item::SolvedForall(alpha, monotype) if for_var == alpha => Some(monotype.clone()),
+        self.0.iter().find_map(|entry| match entry {
+            Entry::SolvedForall(alpha, monotype) if for_var == alpha => Some(monotype.clone()),
             _ => None,
         })
     }
 
     fn find_exists_solution(&self, for_var: &ExistsVar) -> Option<Term> {
-        self.0.iter().find_map(|item| match item {
-            Item::SolvedExists(alpha_hat, _, monotype) if for_var == alpha_hat => {
+        self.0.iter().find_map(|entry| match entry {
+            Entry::SolvedExists(alpha_hat, _, monotype) if for_var == alpha_hat => {
                 Some(monotype.clone())
             }
             _ => None,
@@ -169,17 +184,17 @@ impl TyCtx {
             (Type::Forall(alpha1, sort1, a), Type::Forall(alpha2, sort2, b))
                 if alpha1 == alpha2 && sort1 == sort2 =>
             {
-                let item = Item::Decl(TyVar::Forall(ForallVar(alpha1.0)), sort1);
-                let new_tcx = self.extend(item.clone());
-                new_tcx.check_tys_equal(*a, *b).drop_from(item)
+                let entry = Entry::Decl(TyVar::Forall(ForallVar(alpha1.0)), sort1);
+                let new_tcx = self.extend(entry.clone());
+                new_tcx.check_tys_equal(*a, *b).drop_from(entry)
             }
             // ≡∃
             (Type::Exists(alpha1, sort1, a), Type::Exists(alpha2, sort2, b))
                 if alpha1 == alpha2 && sort1 == sort2 =>
             {
-                let item = Item::Decl(TyVar::Exists(ExistsVar(alpha1.0)), sort1);
-                let new_tcx = self.extend(item.clone());
-                new_tcx.check_tys_equal(*a, *b).drop_from(item)
+                let entry = Entry::Decl(TyVar::Exists(ExistsVar(alpha1.0)), sort1);
+                let new_tcx = self.extend(entry.clone());
+                new_tcx.check_tys_equal(*a, *b).drop_from(entry)
             }
             // ≡⊃
             // ≡∧
@@ -213,7 +228,27 @@ impl TyCtx {
 
     /// Γ ⊢ α̂ := t : κ ⊣ ∆, under `self`, instantiate `var` such that `var` = `t` with output ctx ∆.
     fn instantiate(self, var: ExistsVar, term: Term, sort: Sort) -> Self {
-        todo!()
+        match (term, sort) {
+            // InstZero
+            (Term::Zero, Sort::Natural) => self.replace(
+                Entry::Decl(TyVar::Exists(var), Sort::Natural),
+                Entry::SolvedExists(var, Sort::Natural, Term::Zero),
+            ),
+            // InstSucc
+            (Term::Succ(t1), Sort::Natural) => {
+                let alpha_hat1 = ExistsVar::fresh("α̂");
+                let new_tcx = self.replace(
+                    Entry::Decl(TyVar::Exists(var), Sort::Natural),
+                    Entry::SolvedExists(
+                        var,
+                        Sort::Natural,
+                        Term::Succ(Box::new(Term::ExistsVar(alpha_hat1))),
+                    ),
+                );
+                new_tcx.instantiate(alpha_hat1, *t1, Sort::Natural)
+            }
+            _ => todo!(),
+        }
     }
 
     /// Γ ⊢ Π covers A⃗ q, under the context `self`, check if `branches` cover the types `tys`.
@@ -257,7 +292,7 @@ impl TyCtx {
             }
             // Covers∃
             Some(Type::Exists(ident, sort, _)) => {
-                let new_tcx = self.extend(Item::Decl(TyVar::Exists(ExistsVar(ident.0)), sort));
+                let new_tcx = self.extend(Entry::Decl(TyVar::Exists(ExistsVar(ident.0)), sort));
                 new_tcx.branches_cover(branches, tys, principality)
             }
             Some(Type::With(ty, prop)) => {
@@ -280,9 +315,9 @@ impl TyCtx {
 
                 let mut cons_tys = tys;
                 let n = ForallVar::fresh("n");
-                cons_tys.push_front(Type::Vec(Term::ForallVar(n.clone()), ty.clone()));
+                cons_tys.push_front(Type::Vec(Term::ForallVar(n), ty.clone()));
                 cons_tys.push_front(*ty);
-                let new_tcx = self.extend(Item::Decl(TyVar::Forall(n.clone()), Sort::Natural));
+                let new_tcx = self.extend(Entry::Decl(TyVar::Forall(n), Sort::Natural));
 
                 let preconds = match principality {
                     // CoversVec
@@ -353,25 +388,18 @@ impl TyCtx {
             // ElimeqSucc
             (Term::Succ(s1), Term::Succ(s2), Sort::Natural) => self.unify(*s1, *s2, Sort::Natural),
             // ElimeqUvarL
-            (Term::ForallVar(alpha), term2, _)
-                if !term2.free_forall_vars().contains(&alpha)
+            // ElimeqUvarR
+            (Term::ForallVar(alpha), term, _) | (term, Term::ForallVar(alpha), _)
+                if !term.free_forall_vars().contains(&alpha)
                     && self.find_forall_solution(&alpha).is_none() =>
             {
-                MaybeTcx::Valid(self.extend(Item::SolvedForall(alpha, term2)))
+                MaybeTcx::Valid(self.extend(Entry::SolvedForall(alpha, term)))
             }
             // ElimeqUvarL⊥
-            (Term::ForallVar(alpha), term2, _) if term2.free_forall_vars().contains(&alpha) => {
-                MaybeTcx::Bottom
-            }
-            // ElimeqUvarR
-            (term1, Term::ForallVar(alpha), _)
-                if !term1.free_forall_vars().contains(&alpha)
-                    && self.find_forall_solution(&alpha).is_none() =>
-            {
-                MaybeTcx::Valid(self.extend(Item::SolvedForall(alpha, term1)))
-            }
             // ElimeqUvarR⊥
-            (term1, Term::ForallVar(alpha), _) if term1.free_forall_vars().contains(&alpha) => {
+            (Term::ForallVar(alpha), term, _) | (term, Term::ForallVar(alpha), _)
+                if term.free_forall_vars().contains(&alpha) =>
+            {
                 MaybeTcx::Bottom
             }
             // ElimeqUnit
