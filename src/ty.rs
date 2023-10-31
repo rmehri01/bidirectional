@@ -32,19 +32,55 @@ impl Type {
     pub fn to_term(self) -> Term {
         match self {
             // TODO: should this be a panic?
-            Type::Forall(_, _, _)
-            | Type::Exists(_, _, _)
-            | Type::Implies(_, _)
-            | Type::With(_, _)
-            | Type::Vec(_, _) => panic!("cannot convert type to a term"),
+            Self::Forall(_, _, _)
+            | Self::Exists(_, _, _)
+            | Self::Implies(_, _)
+            | Self::With(_, _)
+            | Self::Vec(_, _) => panic!("cannot convert type to a term"),
             Self::Unit => Term::Unit,
             Self::ForallVar(f) => Term::ForallVar(f),
             Self::ExistsVar(e) => Term::ExistsVar(e),
             Self::Binary(a, op, b) => {
                 Term::Binary(Box::new(a.to_term()), op, Box::new(b.to_term()))
             }
-            Type::Unit => todo!(),
         }
+    }
+
+    pub fn free_exists_vars(&self) -> HashSet<ExistsVar> {
+        // keep track of bound variables
+        fn free_vars_with_bound(
+            ty: &Type,
+            mut bound_vars: HashSet<ExistsVar>,
+        ) -> HashSet<ExistsVar> {
+            match ty {
+                Type::Unit => HashSet::new(),
+                Type::ForallVar(_) => HashSet::new(),
+                Type::ExistsVar(var) => {
+                    if !bound_vars.contains(var) {
+                        HashSet::from([*var])
+                    } else {
+                        HashSet::new()
+                    }
+                }
+                Type::Binary(l, _, r) => free_vars_with_bound(l, bound_vars.clone())
+                    .into_iter()
+                    .chain(free_vars_with_bound(r, bound_vars))
+                    .collect(),
+                Type::Forall(_, _, ty) => free_vars_with_bound(ty, bound_vars),
+                Type::Exists(ident, _, ty) => {
+                    bound_vars.insert(ExistsVar(ident.0));
+                    free_vars_with_bound(ty, bound_vars)
+                }
+                Type::Implies(_, ty) | Type::With(ty, _) => free_vars_with_bound(ty, bound_vars),
+                Type::Vec(term, ty) => term
+                    .free_exists_vars()
+                    .into_iter()
+                    .chain(free_vars_with_bound(ty, bound_vars))
+                    .collect(),
+            }
+        }
+
+        free_vars_with_bound(self, HashSet::new())
     }
 }
 
@@ -83,11 +119,11 @@ impl Term {
             Self::Zero | Self::Unit | Self::ExistsVar(_) => HashSet::new(),
             Self::Succ(t) => t.free_forall_vars(),
             Self::ForallVar(f) => HashSet::from([*f]),
-            Self::Binary(a, _, b) => {
-                let mut fvs = a.free_forall_vars();
-                fvs.extend(b.free_forall_vars());
-                fvs
-            }
+            Self::Binary(a, _, b) => a
+                .free_forall_vars()
+                .into_iter()
+                .chain(b.free_forall_vars())
+                .collect(),
         }
     }
 
@@ -96,11 +132,11 @@ impl Term {
             Self::Zero | Self::Unit | Self::ForallVar(_) => HashSet::new(),
             Self::Succ(t) => t.free_exists_vars(),
             Self::ExistsVar(e) => HashSet::from([*e]),
-            Self::Binary(a, _, b) => {
-                let mut fvs = a.free_exists_vars();
-                fvs.extend(b.free_exists_vars());
-                fvs
-            }
+            Self::Binary(a, _, b) => a
+                .free_exists_vars()
+                .into_iter()
+                .chain(b.free_exists_vars())
+                .collect(),
         }
     }
     /// t1 # t2, produces true if `self` and `other` have incompatible head constructors
@@ -132,7 +168,7 @@ pub struct Proposition(pub Term, pub Term);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Principality {
     Principal,
-    NotPrincipal,
+    NonPrincipal,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -191,7 +227,7 @@ impl ExistsVar {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TyVar {
     Forall(ForallVar),
     Exists(ExistsVar),

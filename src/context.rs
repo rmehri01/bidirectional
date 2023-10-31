@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, iter};
+use std::{
+    collections::{HashSet, VecDeque},
+    iter,
+};
 
 use crate::{
     pat::{Branch, Branches},
@@ -128,11 +131,24 @@ impl TyCtx {
         })
     }
 
+    fn find_expr_solution(&self, for_var: &Ident) -> Option<Type> {
+        self.0.iter().find_map(|entry| match entry {
+            Entry::ExprTyping(x, ty, _) if for_var == x => Some(ty.clone()),
+            _ => None,
+        })
+    }
+
+    // TODO: not sure how necessary this is, seems like overlaps with find_solution?
+    fn find_unsolved(&self, var: &TyVar) -> Option<Sort> {
+        self.0.iter().find_map(|entry| match entry {
+            Entry::Unsolved(found_var, sort) if found_var == var => Some(*sort),
+            _ => None,
+        })
+    }
+
     // TODO: not sure how necessary this is, seems like overlaps with find_solution?
     fn is_unsolved(&self, var: &TyVar) -> bool {
-        self.0
-            .iter()
-            .any(|entry| matches!(entry, Entry::Unsolved(found_var, _) if found_var == var))
+        self.find_unsolved(var).is_none()
     }
 
     /// Γ ⊢ A <:ᴾ B ⊣ ∆, under `self`, check if type `a` is a subtype of `b` with output ctx ∆,
@@ -345,6 +361,146 @@ impl TyCtx {
         }
     }
 
+    /// Γ ⊢ P prop, under `self`, `prop` is well-formed.
+    fn prop_well_formed(&self, prop: &Proposition) -> bool {
+        // EqProp
+        let Proposition(t1, t2) = prop;
+        self.entails(t1, &Sort::Natural) && self.entails(t2, &Sort::Natural)
+    }
+
+    /// Γ ⊢ A type, under `self`, `ty` is well-formed.
+    fn ty_well_formed(&self, ty: &Type) -> bool {
+        match ty {
+            // VarWF
+            Type::ForallVar(var) => self
+                .0
+                .contains(&Entry::Unsolved(TyVar::Forall(*var), Sort::Monotype)),
+            // SolvedVarWF
+            Type::ExistsVar(var) => {
+                let unsolved_entails = self
+                    .0
+                    .contains(&Entry::Unsolved(TyVar::Exists(*var), Sort::Monotype));
+                let solved_entails = self
+                    .0
+                    .iter()
+                    .any(|entry| matches!(
+                        entry,
+                        Entry::SolvedExists(found_var, found_sort, _) if found_var == var && *found_sort == Sort::Monotype
+                    ));
+
+                unsolved_entails || solved_entails
+            }
+            // UnitWF
+            Type::Unit => true,
+            // BinWF
+            Type::Binary(a, _, b) => self.ty_well_formed(a) && self.ty_well_formed(b),
+            // VecWF
+            Type::Vec(t, a) => self.entails(t, &Sort::Natural) && self.ty_well_formed(a),
+            // ForallWF
+            Type::Forall(ident, sort, ty) => self
+                .extend(Entry::Unsolved(TyVar::Forall(ForallVar(ident.0)), *sort))
+                .ty_well_formed(ty),
+            // ExistsWF
+            Type::Exists(ident, sort, ty) => self
+                .extend(Entry::Unsolved(TyVar::Exists(ExistsVar(ident.0)), *sort))
+                .ty_well_formed(ty),
+            // ImpliesWF
+            // WithWF
+            Type::Implies(p, a) | Type::With(a, p) => {
+                self.prop_well_formed(p) && self.ty_well_formed(a)
+            }
+        }
+    }
+
+    /// Γ ⊢ A⃗ types, under `self`, `tys` are well-formed.
+    fn tys_well_formed(&self, tys: &[Type]) -> bool {
+        // TypevecWF
+        tys.iter().all(|ty| self.ty_well_formed(ty))
+    }
+
+    /// Γ ⊢ A p type, under `self`, `ty` is well-formed and respects principality `p`.
+    fn principality_well_formed(&self, ty: Type, p: &Principality) -> bool {
+        match p {
+            // PrincipalWF
+            Principality::Principal => {
+                self.ty_well_formed(&ty) && self.apply_to_ty(ty).free_exists_vars().is_empty()
+            }
+            // NonPrincipalWF
+            Principality::NonPrincipal => self.ty_well_formed(&ty),
+        }
+    }
+
+    /// Γ ⊢ A⃗ p types, under `self`, `tys` are well-formed with principality `p`.
+    fn principalities_well_formed(&self, tys: Vec<Type>, p: &Principality) -> bool {
+        // PrincipalTypevecWF
+        tys.into_iter()
+            .all(|ty| self.principality_well_formed(ty, p))
+    }
+
+    /// Γ ctx, algorithmic context `self` is well-formed.
+    fn well_formed(mut self) -> bool {
+        match self.0.pop() {
+            // EmptyCtx
+            None => true,
+            // HypCtx
+            // Hyp!Ctx
+            Some(Entry::ExprTyping(x, a, p)) => {
+                let ty_well_formed = self.ty_well_formed(&a);
+                let x_not_in_domain = self.find_expr_solution(&x).is_none();
+                let principality_condition = match p {
+                    Principality::Principal => self.apply_to_ty(a).free_exists_vars().is_empty(),
+                    Principality::NonPrincipal => true,
+                };
+                let self_wf = self.well_formed();
+
+                self_wf && x_not_in_domain && ty_well_formed && principality_condition
+            }
+            // VarCtx
+            Some(Entry::Unsolved(var, _)) => !self.domain().contains(&var) && self.well_formed(),
+            // SolvedCtx
+            Some(Entry::SolvedExists(var, sort, term)) => {
+                !self.domain().contains(&TyVar::Exists(var))
+                    && self.entails(&term, &sort)
+                    && self.well_formed()
+            }
+            // EqnVarCtx
+            Some(Entry::SolvedForall(var, term)) => {
+                let no_solution = self.find_forall_solution(&var).is_none();
+                let sort = self.find_unsolved(&TyVar::Forall(var));
+                let term_wf = sort.is_some_and(|sort| self.entails(&term, &sort));
+                let self_wf = self.well_formed();
+
+                self_wf && no_solution && term_wf
+            }
+            // MarkerCtx
+            Some(Entry::Marker(var)) => !self.0.contains(&Entry::Marker(var)) && self.well_formed(),
+        }
+    }
+
+    fn domain(&self) -> HashSet<TyVar> {
+        let mut domain = HashSet::new();
+
+        for entry in &self.0 {
+            match entry {
+                Entry::Unsolved(var, _) => {
+                    domain.insert(*var);
+                }
+                Entry::ExprTyping(_, _, _) => {}
+                Entry::SolvedExists(var, _, _) => {
+                    domain.insert(TyVar::Exists(*var));
+                }
+                Entry::SolvedForall(var, _) => {
+                    domain.insert(TyVar::Forall(*var));
+                }
+                Entry::Marker(var) => {
+                    domain.insert(*var);
+                }
+            }
+        }
+
+        domain
+    }
+
     /// Γ ⊢ Π covers A⃗ q, under the context `self`, check if `branches` cover the types `tys`.
     fn branches_cover(
         self,
@@ -396,8 +552,8 @@ impl TyCtx {
                     // Covers∧
                     Principality::Principal => self.branches_cover_assuming(prop, branches, tys),
                     // Covers∧!̸
-                    Principality::NotPrincipal => {
-                        self.branches_cover(branches, tys, Principality::NotPrincipal)
+                    Principality::NonPrincipal => {
+                        self.branches_cover(branches, tys, Principality::NonPrincipal)
                     }
                 }
             }
@@ -430,11 +586,11 @@ impl TyCtx {
                         covers_nil && covers_cons
                     }
                     // CoversVec!̸
-                    Principality::NotPrincipal => {
+                    Principality::NonPrincipal => {
                         let covers_nil =
-                            self.branches_cover(nils, nil_tys, Principality::NotPrincipal);
+                            self.branches_cover(nils, nil_tys, Principality::NonPrincipal);
                         let covers_cons =
-                            new_tcx.branches_cover(conses, cons_tys, Principality::NotPrincipal);
+                            new_tcx.branches_cover(conses, cons_tys, Principality::NonPrincipal);
 
                         covers_nil && covers_cons
                     }
