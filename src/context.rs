@@ -1,7 +1,7 @@
 use std::collections::{HashSet, VecDeque};
 
 use crate::{
-    pat::{Branch, Branches},
+    pat::{Branch, Branches, Pattern},
     syntax::{Expr, Ident, Spine, Value},
     ty::{
         Connective, ExistsVar, ForallVar, Polarity, Principality, Proposition, Sort, Term, TyVar,
@@ -268,7 +268,8 @@ impl TyCtx {
 
                 let new_a = new_tcx.apply_to_ty(a.clone());
                 let new_c = new_tcx.apply_to_ty(c);
-                let new_tcx = new_tcx.check_branches(branches.clone(), vec![new_a], q, new_c, p);
+                let new_tcx =
+                    new_tcx.check_branches(branches.clone(), VecDeque::from([new_a]), q, new_c, p);
 
                 let new_a = new_tcx.apply_to_ty(a);
                 if !new_tcx
@@ -418,17 +419,203 @@ impl TyCtx {
         }
     }
 
-    /// Γ ⊢ Π :: A⃗ q <== C p ⊣ ∆, under `self`, check `branches` with patterns of `pattern_tys` and
+    /// Γ ⊢ Π :: A⃗ q <== C p ⊣ ∆, under `self`, check `branches` with patterns of type `pattern_tys` and
     /// bodies of `body_ty` with output context ∆.
     fn check_branches(
         self,
-        branches: Branches,
-        pattern_tys: Vec<Type>,
+        mut branches: Branches,
+        pattern_tys: VecDeque<Type>,
         q: Principality,
         body_ty: Type,
         p: Principality,
     ) -> Self {
-        todo!()
+        match branches.0.pop_front() {
+            // MatchEmpty
+            None => self,
+            // MatchSeq
+            Some(branch) => {
+                let new_tcx = self.check_branch(branch, pattern_tys.clone(), q, body_ty.clone(), p);
+                let new_tys = pattern_tys
+                    .into_iter()
+                    .map(|ty| new_tcx.apply_to_ty(ty))
+                    .collect();
+                new_tcx.check_branches(branches, new_tys, q, body_ty, p)
+            }
+        }
+    }
+
+    /// Γ ⊢ π :: A⃗ q <== C p ⊣ ∆, under `self`, check `branch` with patterns of type `pattern_tys` and
+    /// bodies of `body_ty` with output context ∆.
+    fn check_branch(
+        self,
+        branch: Branch,
+        mut pattern_tys: VecDeque<Type>,
+        q: Principality,
+        body_ty: Type,
+        p: Principality,
+    ) -> Self {
+        let Branch(mut ps, e) = branch;
+        match (ps.pop_front(), pattern_tys.pop_front(), q, body_ty, p) {
+            // MatchBase
+            (None, None, _, body_ty, p) if ps.is_empty() => self.check_expr_ty(e, body_ty, p),
+            // MatchUnit
+            (Some(Pattern::Unit), Some(Type::Unit), q, body_ty, p) => {
+                self.check_branch(Branch(ps, e), pattern_tys, q, body_ty, p)
+            }
+            // Match∃
+            (Some(pat), Some(Type::Exists(alpha, sort, a)), q, body_ty, p) => {
+                ps.push_front(pat);
+                pattern_tys.push_front(*a);
+
+                let entry = Entry::Unsolved(TyVar::Exists(ExistsVar(alpha.0)), sort);
+                self.extend(entry.clone())
+                    .check_branch(Branch(ps, e), pattern_tys, q, body_ty, p)
+                    .drop_from(entry)
+            }
+            (Some(pat), Some(Type::With(a, prop)), q, body_ty, p) => {
+                ps.push_front(pat);
+                pattern_tys.push_front(*a);
+
+                match q {
+                    // Match∧
+                    Principality::Principal => {
+                        self.check_branch_assuming(prop, Branch(ps, e), pattern_tys, body_ty, p)
+                    }
+                    // Match∧!̸
+                    Principality::NonPrincipal => self.check_branch(
+                        Branch(ps, e),
+                        pattern_tys,
+                        Principality::NonPrincipal,
+                        body_ty,
+                        p,
+                    ),
+                }
+            }
+            // Match×
+            (
+                Some(Pattern::Pair(p1, p2)),
+                Some(Type::Binary(a1, Connective::Product, a2)),
+                q,
+                body_ty,
+                p,
+            ) => {
+                ps.push_front(*p2);
+                ps.push_front(*p1);
+                pattern_tys.push_front(*a2);
+                pattern_tys.push_front(*a1);
+                self.check_branch(Branch(ps, e), pattern_tys, q, body_ty, p)
+            }
+            // Match+ₖ
+            (
+                Some(Pattern::Inj1(pat)),
+                Some(Type::Binary(ty, Connective::Sum, _)),
+                q,
+                body_ty,
+                p,
+            )
+            | (
+                Some(Pattern::Inj2(pat)),
+                Some(Type::Binary(_, Connective::Sum, ty)),
+                q,
+                body_ty,
+                p,
+            ) => {
+                ps.push_front(*pat);
+                pattern_tys.push_front(*ty);
+                self.check_branch(Branch(ps, e), pattern_tys, q, body_ty, p)
+            }
+            // MatchNeg
+            (Some(Pattern::Var(z)), Some(a), q, body_ty, p) if !a.is_quantifier() => {
+                let entry = Entry::ExprTyping(z, a, Principality::Principal);
+                self.extend(entry.clone())
+                    .check_branch(Branch(ps, e), pattern_tys, q, body_ty, p)
+                    .drop_from(entry)
+            }
+            // MatchWild
+            (Some(Pattern::Wildcard), Some(a), q, body_ty, p) if !a.is_quantifier() => {
+                self.check_branch(Branch(ps, e), pattern_tys, q, body_ty, p)
+            }
+            (Some(Pattern::Nil), Some(Type::Vec(t, _)), q, body_ty, p) => {
+                match q {
+                    // MatchNil
+                    Principality::Principal => self.check_branch_assuming(
+                        Proposition(t, Term::Zero),
+                        Branch(ps, e),
+                        pattern_tys,
+                        body_ty,
+                        p,
+                    ),
+                    // MatchNil!̸
+                    Principality::NonPrincipal => self.check_branch(
+                        Branch(ps, e),
+                        pattern_tys,
+                        Principality::NonPrincipal,
+                        body_ty,
+                        p,
+                    ),
+                }
+            }
+            (Some(Pattern::Cons(p1, p2)), Some(Type::Vec(t, a)), q, body_ty, p) => {
+                let alpha = ForallVar::fresh("α");
+                let entry = Entry::Unsolved(TyVar::Forall(alpha), Sort::Natural);
+                ps.push_front(*p2);
+                ps.push_front(*p1);
+                pattern_tys.push_front(Type::Vec(Term::ForallVar(alpha), a.clone()));
+                pattern_tys.push_front(*a);
+
+                match q {
+                    // MatchCons
+                    Principality::Principal => self
+                        .extend(entry.clone())
+                        .check_branch_assuming(
+                            Proposition(t, Term::Succ(Box::new(Term::ForallVar(alpha)))),
+                            Branch(ps, e),
+                            pattern_tys,
+                            body_ty,
+                            p,
+                        )
+                        .drop_from(entry),
+                    // MatchCons!̸
+                    Principality::NonPrincipal => self
+                        .extend(entry.clone())
+                        .check_branch(
+                            Branch(ps, e),
+                            pattern_tys,
+                            Principality::NonPrincipal,
+                            body_ty,
+                            p,
+                        )
+                        .drop_from(entry),
+                }
+            }
+            _ => panic!("unexpected pattern when checking branch"),
+        }
+    }
+
+    /// Γ / P ⊢ π :: A⃗ ! <== C p ⊣ ∆, under `self`, incorporate proposition `prop` while checking
+    /// `branches` with patterns of type `pattern_tys` and bodies of `body_ty` with output context ∆.
+    fn check_branch_assuming(
+        self,
+        prop: Proposition,
+        branch: Branch,
+        pattern_tys: VecDeque<Type>,
+        body_ty: Type,
+        p: Principality,
+    ) -> Self {
+        let Proposition(t1, t2) = prop;
+
+        let mark = ForallVar::fresh("P");
+        let marker = Entry::Marker(TyVar::Forall(mark));
+
+        let maybe_tcx = self.extend(marker.clone()).unify(t1, t2, Sort::Monotype);
+        match maybe_tcx {
+            // Match⊥
+            MaybeTcx::Bottom => self,
+            // MatchUnify
+            MaybeTcx::Valid(new_tcx) => new_tcx
+                .check_branch(branch, pattern_tys, Principality::Principal, body_ty, p)
+                .drop_from(marker),
+        }
     }
 
     /// Γ ⊢ e ==> A p ⊣ ∆, under `self`, expression `expr` synthesizes output type `A` with output context ∆.
