@@ -120,4 +120,8 @@ impl Value {
             Self::Cons(hd, tl) => Expr::Cons(Box::new(hd.into_expr()), Box::new(tl.into_expr())),
         }
     }
+
+    pub fn function(ident: Ident, body: Expr) -> Self {
+        Self::Function(ident, Box::new(body))
+    }
 }

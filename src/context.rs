@@ -626,9 +626,9 @@ impl TyCtx {
                 //     .into_iter()
                 //     .map(|ty| new_tcx.apply_to_ty(ty))
                 //     .collect();
-                // let new_body_ty = new_tcx.apply_to_ty(body_ty);
+                let new_body_ty = new_tcx.apply_to_ty(body_ty);
                 new_tcx
-                    .check_branch(branch, pattern_tys, Principality::Principal, body_ty, p)
+                    .check_branch(branch, pattern_tys, Principality::Principal, new_body_ty, p)
                     .drop_from(marker)
             }
         }
@@ -876,8 +876,7 @@ impl TyCtx {
                     .contains(&Entry::Unsolved(TyVar::Exists(alpha_hat), sort))
                     && !term.free_exists_vars().contains(&alpha_hat) =>
             {
-                dbg!(&self);
-                self.instantiate(dbg!(alpha_hat), dbg!(term), dbg!(sort))
+                self.instantiate(alpha_hat, term, sort)
             }
             (term1, term2, sort) => panic!(
                 "unexpected pattern for checking term equation: {term1:?} {term2:?} {sort:?}"
@@ -1325,8 +1324,7 @@ impl TyCtx {
                     }
                 }
             }
-            Some(Type::Vec(term, ty)) => {
-                let guarded = branches.guarded();
+            Some(Type::Vec(term, ty)) if branches.guarded() => {
                 let (nils, conses) = branches.expand_vec_pats();
 
                 let nil_tys = tys.clone();
@@ -1337,7 +1335,7 @@ impl TyCtx {
                 cons_tys.push_front(*ty);
                 let new_tcx = self.extend(Entry::Unsolved(TyVar::Forall(n), Sort::Natural));
 
-                let preconds = match principality {
+                match principality {
                     // CoversVec
                     Principality::Principal => {
                         let covers_nil = self.branches_cover_assuming(
@@ -1362,9 +1360,7 @@ impl TyCtx {
 
                         covers_nil && covers_cons
                     }
-                };
-
-                guarded && preconds
+                }
             }
             // CoversVar
             Some(_) => {
@@ -1382,12 +1378,18 @@ impl TyCtx {
         tys: VecDeque<Type>,
     ) -> bool {
         let Proposition(term1, term2) = prop;
-        let maybe_tcx = self.unify(term1, term2, Sort::Natural);
+
+        let new_term1 = self.apply_to_term(term1);
+        let new_term2 = self.apply_to_term(term2);
+        let maybe_tcx = self.unify(new_term1, new_term2, Sort::Natural);
+
         match maybe_tcx {
+            // CoversEq
             MaybeTcx::Valid(new_tcx) => {
                 let new_tys = tys.into_iter().map(|ty| new_tcx.apply_to_ty(ty)).collect();
                 new_tcx.branches_cover(branches, new_tys, Principality::Principal)
             }
+            // CoversEqBot
             MaybeTcx::Bottom => true,
         }
     }
@@ -1455,6 +1457,8 @@ enum MaybeTcx {
 #[cfg(test)]
 mod tests {
     use internment::Intern;
+
+    use crate::syntax::Value;
 
     use super::*;
 
@@ -1587,6 +1591,55 @@ mod tests {
         let (ty, p, _) =
             tcx.synth_expr_ty(Expr::app(Expr::Var(id), Spine::from_iter([Expr::Unit])));
         assert_eq!(ty, Type::Unit);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn reconstruct_vec() {
+        let tcx = TyCtx::new();
+        let xs = Ident(Intern::new("xs".to_string()));
+        let y = Ident(Intern::new("y".to_string()));
+        let ys = Ident(Intern::new("ys".to_string()));
+
+        let n = Ident(Intern::new("n".to_string()));
+        let alpha = Ident(Intern::new("α".to_string()));
+        let fn_ty = Type::forall(
+            n,
+            Sort::Natural,
+            Type::forall(
+                alpha,
+                Sort::Monotype,
+                Type::binary(
+                    Type::vec(
+                        Term::ForallVar(ForallVar(n.0)),
+                        Type::ForallVar(ForallVar(alpha.0)),
+                    ),
+                    Connective::Function,
+                    Type::vec(
+                        Term::ForallVar(ForallVar(n.0)),
+                        Type::ForallVar(ForallVar(alpha.0)),
+                    ),
+                ),
+            ),
+        );
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
+            Expr::function(
+                xs,
+                Expr::case(
+                    Expr::Var(xs),
+                    Branches::from_iter([
+                        Branch::from_iter(
+                            [Pattern::cons(Pattern::Var(y), Pattern::Var(ys))],
+                            Expr::cons(Expr::Var(y), Expr::Var(ys)),
+                        ),
+                        // TODO: wildcard or var here in pattern fails?
+                        Branch::from_iter([Pattern::Nil], Expr::Nil),
+                    ]),
+                ),
+            ),
+            fn_ty.clone(),
+        ));
+        assert_eq!(ty, fn_ty);
         assert_eq!(p, Principality::Principal);
     }
 }
