@@ -197,9 +197,9 @@ impl TyCtx {
             }
             // ∃I
             (e, Type::Exists(alpha, sort, mut a), _) if e.is_intro_form() => {
-                // TODO: not sure if need to make exists var instead
                 let alpha = ForallVar(alpha.0);
                 let alpha_hat = ExistsVar::fresh("α^");
+                // TODO: not sure if need to make exists var instead
                 a.substitute(alpha, alpha_hat);
                 self.extend(Entry::Unsolved(TyVar::Forall(alpha), sort))
                     .check_expr_ty(e, *a, Principality::NonPrincipal)
@@ -641,7 +641,7 @@ impl TyCtx {
             Expr::Var(var) if self.find_expr_solution(&var).is_some() => {
                 let (a, p) = self.find_expr_solution(&var).unwrap();
                 // TODO: not sure if needs sub or not, seems to overwrite in recursive case, maybe need to rename quantifier vars or something?
-                (self.apply_to_ty(a), p, self)
+                (a, p, self)
             }
             // Anno
             Expr::Annotation(e, a)
@@ -759,14 +759,13 @@ impl TyCtx {
         match (a, b, p) {
             // <:∀L
             (Type::Forall(alpha, sort, mut a), b, Polarity::Negative) if !b.is_forall() => {
-                let alpha = ForallVar(alpha.0);
                 let alpha_hat = ExistsVar::fresh("α^");
-                let marker = Entry::Marker(TyVar::Forall(alpha));
+                let marker = Entry::Marker(TyVar::Exists(alpha_hat));
                 let new_tcx = self.extend_many([
                     marker.clone(),
                     Entry::Unsolved(TyVar::Exists(alpha_hat), sort),
                 ]);
-                a.substitute(alpha, alpha_hat);
+                a.substitute(ForallVar(alpha.0), alpha_hat);
                 new_tcx
                     .check_subtype(*a, b, Polarity::Negative)
                     .drop_from(marker)
@@ -788,16 +787,15 @@ impl TyCtx {
                     .drop_from(alpha_entry)
             }
             // <:∃R
-            (a, Type::Forall(beta, sort, mut b), Polarity::Positive) if !a.is_exists() => {
-                // TODO: not sure if need to make exists var instead
-                let beta = ForallVar(beta.0);
-                let beta_hat = ExistsVar::fresh("α^");
-                let marker = Entry::Marker(TyVar::Forall(beta));
+            (a, Type::Exists(beta, sort, mut b), Polarity::Positive) if !a.is_exists() => {
+                let beta_hat = ExistsVar::fresh("β^");
+                let marker = Entry::Marker(TyVar::Exists(beta_hat));
                 let new_tcx = self.extend_many([
                     marker.clone(),
                     Entry::Unsolved(TyVar::Exists(beta_hat), sort),
                 ]);
-                b.substitute(beta, beta_hat);
+                // TODO: not sure if need to make exists var instead
+                b.substitute(ForallVar(beta.0), beta_hat);
                 new_tcx
                     .check_subtype(a, *b, Polarity::Positive)
                     .drop_from(marker)
@@ -828,7 +826,7 @@ impl TyCtx {
             }
             // <:Equiv
             (a, b, _) if !a.is_quantifier() && !b.is_quantifier() => self.check_tys_equal(a, b),
-            _ => panic!("unexpected pattern when checking subtype"),
+            (a, b, p) => panic!("unexpected pattern when checking subtype: {a:?} {b:?} {p:?}"),
         }
     }
 
@@ -949,7 +947,7 @@ impl TyCtx {
             {
                 self.instantiate(alpha_hat, tau.to_term(), Sort::Monotype)
             }
-            _ => panic!("unexpected pattern for checking that types are equal"),
+            (a, b) => panic!("unexpected pattern for checking that types are equal: {a:?} {b:?}"),
         }
     }
 
@@ -984,7 +982,7 @@ impl TyCtx {
                 // TODO: what sort
                 self.instantiate(alpha_hat, tau, Sort::Natural)
             }
-            _ => panic!("unexpected pattern for checking that terms are equal"),
+            (a, b) => panic!("unexpected pattern for checking that terms are equal: {a:?} {b:?}"),
         }
         // TODO: not sure if this is just normal equality
         // if a == b {
@@ -1073,7 +1071,7 @@ impl TyCtx {
                 )
             }
             (term, sort) => {
-                panic!("unexpected pattern when instantiating existential var: {term:?} {sort:?}")
+                panic!("unexpected pattern when instantiating existential var: {var:?} {term:?} {sort:?} {self:#?}")
             }
         }
     }
@@ -1570,6 +1568,7 @@ mod tests {
         assert_eq!(p, Principality::Principal);
     }
 
+    // TODO: can't apply id function to a vector?
     #[test]
     fn from_paper() {
         let id = Ident(Intern::new("id".to_string()));
@@ -1640,6 +1639,261 @@ mod tests {
             fn_ty.clone(),
         ));
         assert_eq!(ty, fn_ty);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn rec_vec_id() {
+        let tcx = TyCtx::new();
+        let id = Ident(Intern::new("id".to_string()));
+        let xs = Ident(Intern::new("xs".to_string()));
+        let y = Ident(Intern::new("y".to_string()));
+        let ys = Ident(Intern::new("ys".to_string()));
+
+        let n = Ident(Intern::new("n".to_string()));
+        let alpha = Ident(Intern::new("α".to_string()));
+        let fn_ty = Type::forall(
+            n,
+            Sort::Natural,
+            Type::forall(
+                alpha,
+                Sort::Monotype,
+                Type::binary(
+                    Type::vec(
+                        Term::ForallVar(ForallVar(n.0)),
+                        Type::ForallVar(ForallVar(alpha.0)),
+                    ),
+                    Connective::Function,
+                    Type::vec(
+                        Term::ForallVar(ForallVar(n.0)),
+                        Type::ForallVar(ForallVar(alpha.0)),
+                    ),
+                ),
+            ),
+        );
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
+            Expr::Fix(
+                id,
+                Value::function(
+                    xs,
+                    Expr::case(
+                        Expr::Var(xs),
+                        Branches::from_iter([
+                            Branch::from_iter([Pattern::Nil], Expr::Nil),
+                            Branch::from_iter(
+                                // TODO: add app to id
+                                [Pattern::cons(Pattern::Var(y), Pattern::Var(ys))],
+                                Expr::cons(
+                                    Expr::Var(y),
+                                    Expr::app(Expr::Var(id), Spine::from_iter([Expr::Var(ys)])),
+                                ),
+                            ),
+                        ]),
+                    ),
+                ),
+            ),
+            fn_ty.clone(),
+        ));
+        assert_eq!(ty, fn_ty);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn apply_id() {
+        let tcx = TyCtx::new();
+
+        let f = Ident(Intern::new("f".to_string()));
+        let x = Ident(Intern::new("x".to_string()));
+        let a = Ident(Intern::new("a".to_string()));
+        let b = Ident(Intern::new("b".to_string()));
+        let apply_fn = Expr::annotation(
+            Expr::function(
+                f,
+                Expr::function(x, Expr::app(Expr::Var(f), Spine::from_iter([Expr::Var(x)]))),
+            ),
+            Type::forall(
+                a,
+                Sort::Monotype,
+                Type::forall(
+                    b,
+                    Sort::Monotype,
+                    Type::binary(
+                        Type::binary(
+                            Type::ForallVar(ForallVar(a.0)),
+                            Connective::Function,
+                            Type::ForallVar(ForallVar(b.0)),
+                        ),
+                        Connective::Function,
+                        Type::binary(
+                            Type::ForallVar(ForallVar(a.0)),
+                            Connective::Function,
+                            Type::ForallVar(ForallVar(b.0)),
+                        ),
+                    ),
+                ),
+            ),
+        );
+        let id = Expr::function(x, Expr::Var(x));
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::app(apply_fn, Spine::from_iter([id, Expr::Unit])));
+        assert_eq!(ty, Type::Unit);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn head() {
+        let tcx = TyCtx::new();
+        let list = Ident(Intern::new("list".to_string()));
+        let x = Ident(Intern::new("x".to_string()));
+        let xs = Ident(Intern::new("xs".to_string()));
+        let head = Expr::function(
+            list,
+            Expr::case(
+                Expr::Var(list),
+                Branches::from_iter([Branch::from_iter(
+                    [Pattern::cons(Pattern::Var(x), Pattern::Var(xs))],
+                    Expr::Var(x),
+                )]),
+            ),
+        );
+
+        let n = Ident(Intern::new("n".to_string()));
+        let a = Ident(Intern::new("A".to_string()));
+        let head_ty = Type::forall(
+            n,
+            Sort::Natural,
+            Type::forall(
+                a,
+                Sort::Monotype,
+                Type::binary(
+                    Type::vec(
+                        Term::succ(Term::ForallVar(ForallVar(n.0))),
+                        Type::ForallVar(ForallVar(a.0)),
+                    ),
+                    Connective::Function,
+                    Type::ForallVar(ForallVar(a.0)),
+                ),
+            ),
+        );
+
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(head, head_ty.clone()));
+        assert_eq!(ty, head_ty);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn poly_id() {
+        let tcx = TyCtx::new();
+        let id = Ident(Intern::new("id".to_string()));
+        let a = Ident(Intern::new("a".to_string()));
+        let result_ty = Type::binary(
+            Type::Unit,
+            Connective::Product,
+            Type::binary(Type::Unit, Connective::Product, Type::Unit),
+        );
+        let apply_id = Expr::annotation(
+            Expr::function(
+                id,
+                Expr::pair(
+                    Expr::app(Expr::Var(id), Spine::from_iter([Expr::Unit])),
+                    Expr::app(
+                        Expr::Var(id),
+                        Spine::from_iter([Expr::pair(Expr::Unit, Expr::Unit)]),
+                    ),
+                ),
+            ),
+            Type::binary(
+                Type::forall(
+                    a,
+                    Sort::Monotype,
+                    Type::binary(
+                        Type::ForallVar(ForallVar(a.0)),
+                        Connective::Function,
+                        Type::ForallVar(ForallVar(a.0)),
+                    ),
+                ),
+                Connective::Function,
+                result_ty.clone(),
+            ),
+        );
+
+        let x = Ident(Intern::new("x".to_string()));
+        let id_fn = Expr::function(x, Expr::Var(x));
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::app(apply_id, Spine::from_iter([id_fn])));
+        assert_eq!(ty, result_ty);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn map() {
+        let tcx = TyCtx::new();
+        let map = Ident(Intern::new("map".to_string()));
+        let f = Ident(Intern::new("f".to_string()));
+        let xs = Ident(Intern::new("xs".to_string()));
+        let y = Ident(Intern::new("y".to_string()));
+        let ys = Ident(Intern::new("ys".to_string()));
+
+        let rec_map = Expr::Fix(
+            map,
+            Value::function(
+                f,
+                Expr::function(
+                    xs,
+                    Expr::case(
+                        Expr::Var(xs),
+                        Branches::from_iter([
+                            Branch::from_iter([Pattern::Nil], Expr::Nil),
+                            Branch::from_iter(
+                                [Pattern::cons(Pattern::Var(y), Pattern::Var(ys))],
+                                Expr::cons(
+                                    Expr::app(Expr::Var(f), Spine::from_iter([Expr::Var(y)])),
+                                    Expr::app(
+                                        Expr::Var(map),
+                                        Spine::from_iter([Expr::Var(f), Expr::Var(ys)]),
+                                    ),
+                                ),
+                            ),
+                        ]),
+                    ),
+                ),
+            ),
+        );
+
+        let n = Ident(Intern::new("n".to_string()));
+        let alpha = Ident(Intern::new("α".to_string()));
+        let beta = Ident(Intern::new("β".to_string()));
+        let anno_ty = Type::forall(
+            n,
+            Sort::Natural,
+            Type::forall(
+                alpha,
+                Sort::Monotype,
+                Type::forall(
+                    beta,
+                    Sort::Monotype,
+                    Type::binary(
+                        Type::binary(
+                            Type::ForallVar(ForallVar(alpha.0)),
+                            Connective::Function,
+                            Type::ForallVar(ForallVar(beta.0)),
+                        ),
+                        Connective::Function,
+                        Type::binary(
+                            Type::vec(
+                                Term::ForallVar(ForallVar(n.0)),
+                                Type::ForallVar(ForallVar(alpha.0)),
+                            ),
+                            Connective::Function,
+                            Type::vec(
+                                Term::ForallVar(ForallVar(n.0)),
+                                Type::ForallVar(ForallVar(beta.0)),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        );
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(rec_map, anno_ty.clone()));
+        assert_eq!(ty, anno_ty);
         assert_eq!(p, Principality::Principal);
     }
 }
