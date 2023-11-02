@@ -25,6 +25,10 @@ impl Branches {
         Self(VecDeque::new())
     }
 
+    pub fn from_iter(branches: impl IntoIterator<Item = Branch>) -> Self {
+        Self(VecDeque::from_iter(branches))
+    }
+
     /// Π guarded, `self` contains a list pattern constructor in head position.
     pub fn guarded(&self) -> bool {
         self.0.iter().any(|Branch(ps, _)| match ps.front() {
@@ -132,5 +136,29 @@ impl Branches {
         }
 
         self
+    }
+}
+
+impl Branch {
+    pub fn from_iter(patterns: impl IntoIterator<Item = Pattern>, expr: Expr) -> Self {
+        Self(VecDeque::from_iter(patterns), expr)
+    }
+}
+
+impl Pattern {
+    pub fn pair(e1: Self, e2: Self) -> Self {
+        Self::Pair(Box::new(e1), Box::new(e2))
+    }
+
+    pub fn inj1(expr: Self) -> Self {
+        Self::Inj1(Box::new(expr))
+    }
+
+    pub fn inj2(expr: Self) -> Self {
+        Self::Inj2(Box::new(expr))
+    }
+
+    pub fn cons(hd: Self, tl: Self) -> Self {
+        Self::Cons(Box::new(hd), Box::new(tl))
     }
 }

@@ -595,7 +595,7 @@ impl TyCtx {
                         .drop_from(entry),
                 }
             }
-            _ => panic!("unexpected pattern when checking branch"),
+            (hd_pats, hd_tys, q, body_ty, p) => panic!("unexpected pattern when checking branch: {hd_pats:?} {hd_tys:?} {q:?} {body_ty:?} {p:?}"),
         }
     }
 
@@ -660,7 +660,7 @@ impl TyCtx {
             }
             // Add straightforward rules, such as for unit
             Expr::Unit => (Type::Unit, Principality::Principal, self),
-            _ => panic!("unexpected pattern in synth"),
+            _ => panic!("unexpected pattern in synth: {expr:?}"),
         }
     }
 
@@ -876,7 +876,8 @@ impl TyCtx {
                     .contains(&Entry::Unsolved(TyVar::Exists(alpha_hat), sort))
                     && !term.free_exists_vars().contains(&alpha_hat) =>
             {
-                self.instantiate(alpha_hat, term, sort)
+                dbg!(&self);
+                self.instantiate(dbg!(alpha_hat), dbg!(term), dbg!(sort))
             }
             (term1, term2, sort) => panic!(
                 "unexpected pattern for checking term equation: {term1:?} {term2:?} {sort:?}"
@@ -1009,13 +1010,16 @@ impl TyCtx {
                     .contains(&Entry::Unsolved(TyVar::Exists(var), Sort::Natural)) =>
             {
                 let alpha_hat1 = ExistsVar::fresh("α^");
-                let new_tcx = self.replace(
+                let new_tcx = self.replace_with_many(
                     Entry::Unsolved(TyVar::Exists(var), Sort::Natural),
-                    Entry::SolvedExists(
-                        var,
-                        Sort::Natural,
-                        Term::Succ(Box::new(Term::ExistsVar(alpha_hat1))),
-                    ),
+                    [
+                        Entry::Unsolved(TyVar::Exists(alpha_hat1), Sort::Natural),
+                        Entry::SolvedExists(
+                            var,
+                            Sort::Natural,
+                            Term::Succ(Box::new(Term::ExistsVar(alpha_hat1))),
+                        ),
+                    ],
                 );
                 new_tcx.instantiate(alpha_hat1, *t1, Sort::Natural)
             }
@@ -1455,27 +1459,133 @@ mod tests {
     use super::*;
 
     #[test]
+    fn basic() {
+        let tcx = TyCtx::new();
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::Unit);
+        assert_eq!(ty, Type::Unit);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn basic_vec() {
+        // TODO: this should be inferred without annotation
+        let tcx = TyCtx::new();
+        let vec_ty = Type::vec(Term::succ(Term::succ(Term::Zero)), Type::Unit);
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
+            Expr::cons(Expr::Unit, Expr::cons(Expr::Unit, Expr::Nil)),
+            vec_ty.clone(),
+        ));
+        assert_eq!(ty, vec_ty);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn basic_case() {
+        let tcx = TyCtx::new();
+        let x = Ident(Intern::new("x".to_string()));
+        let vec_ty = Type::vec(Term::succ(Term::Zero), Type::Unit);
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
+            Expr::case(
+                Expr::Unit,
+                Branches::from_iter([Branch::from_iter(
+                    [Pattern::Var(x)],
+                    Expr::cons(Expr::Var(x), Expr::Nil),
+                )]),
+            ),
+            vec_ty.clone(),
+        ));
+        assert_eq!(ty, vec_ty);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn basic_sum() {
+        let tcx = TyCtx::new();
+        let x = Ident(Intern::new("x".to_string()));
+        let sum_ty = Type::binary(
+            Type::Unit,
+            Connective::Sum,
+            Type::forall(
+                x,
+                Sort::Monotype,
+                Type::binary(
+                    Type::ForallVar(ForallVar(x.0)),
+                    Connective::Function,
+                    Type::ForallVar(ForallVar(x.0)),
+                ),
+            ),
+        );
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
+            Expr::inj2(Expr::function(x, Expr::Var(x))),
+            sum_ty.clone(),
+        ));
+        assert_eq!(ty, sum_ty);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn basic_product() {
+        let tcx = TyCtx::new();
+        let x = Ident(Intern::new("x".to_string()));
+        let y = Ident(Intern::new("y".to_string()));
+        let prod_ty = Type::binary(Type::Unit, Connective::Product, Type::Unit);
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
+            Expr::case(
+                Expr::annotation(Expr::pair(Expr::Unit, Expr::Unit), prod_ty.clone()),
+                Branches::from_iter([
+                    Branch::from_iter(
+                        [Pattern::pair(Pattern::Var(x), Pattern::Var(y))],
+                        Expr::pair(Expr::Var(x), Expr::Var(y)),
+                    ),
+                    Branch::from_iter([Pattern::Wildcard], Expr::pair(Expr::Unit, Expr::Unit)),
+                ]),
+            ),
+            prod_ty.clone(),
+        ));
+        assert_eq!(ty, prod_ty);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn basic_app() {
+        let tcx = TyCtx::new();
+        let x = Ident(Intern::new("x".to_string()));
+        let result_ty = Type::binary(
+            Type::Unit,
+            Connective::Sum,
+            Type::vec(Term::Zero, Type::Unit),
+        );
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::app(
+            Expr::annotation(
+                Expr::function(x, Expr::inj1(Expr::Var(x))),
+                Type::binary(Type::Unit, Connective::Function, result_ty.clone()),
+            ),
+            Spine::from_iter([Expr::Unit]),
+        ));
+        assert_eq!(ty, result_ty);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
     fn from_paper() {
         let id = Ident(Intern::new("id".to_string()));
         let alpha = Ident(Intern::new("α".to_string()));
         let tcx = TyCtx::new().extend(Entry::ExprTyping(
             id,
-            Type::Forall(
+            Type::forall(
                 alpha,
                 Sort::Monotype,
-                Box::new(Type::Binary(
-                    Box::new(Type::ForallVar(ForallVar(alpha.0))),
+                Type::binary(
+                    Type::ForallVar(ForallVar(alpha.0)),
                     Connective::Function,
-                    Box::new(Type::ForallVar(ForallVar(alpha.0))),
-                )),
+                    Type::ForallVar(ForallVar(alpha.0)),
+                ),
             ),
             Principality::Principal,
         ));
 
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::App(
-            Box::new(Expr::Var(id)),
-            Spine(VecDeque::from([Expr::Unit])),
-        ));
+        let (ty, p, _) =
+            tcx.synth_expr_ty(Expr::app(Expr::Var(id), Spine::from_iter([Expr::Unit])));
         assert_eq!(ty, Type::Unit);
         assert_eq!(p, Principality::Principal);
     }

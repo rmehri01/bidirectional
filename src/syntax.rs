@@ -46,11 +46,49 @@ impl Expr {
     pub fn is_case(&self) -> bool {
         matches!(self, Self::Case(..))
     }
+
+    pub fn function(ident: Ident, body: Self) -> Self {
+        Self::Function(ident, Box::new(body))
+    }
+
+    pub fn app(function: Self, spine: Spine) -> Self {
+        Self::App(Box::new(function), spine)
+    }
+
+    pub fn annotation(expr: Self, ty: Type) -> Self {
+        Self::Annotation(Box::new(expr), ty)
+    }
+
+    pub fn pair(e1: Self, e2: Self) -> Self {
+        Self::Pair(Box::new(e1), Box::new(e2))
+    }
+
+    pub fn inj1(expr: Self) -> Self {
+        Self::Inj1(Box::new(expr))
+    }
+
+    pub fn inj2(expr: Self) -> Self {
+        Self::Inj2(Box::new(expr))
+    }
+
+    pub fn case(expr: Self, branches: Branches) -> Self {
+        Self::Case(Box::new(expr), branches)
+    }
+
+    pub fn cons(hd: Self, tl: Self) -> Self {
+        Self::Cons(Box::new(hd), Box::new(tl))
+    }
 }
 
 // TODO: non empty?
 #[derive(Debug, Clone)]
 pub struct Spine(pub VecDeque<Expr>);
+
+impl Spine {
+    pub fn from_iter(exprs: impl IntoIterator<Item = Expr>) -> Self {
+        Self(VecDeque::from_iter(exprs))
+    }
+}
 
 // TODO: combine with expr?
 #[derive(Debug, Clone)]

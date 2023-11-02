@@ -140,6 +140,30 @@ impl Type {
             }
         }
     }
+
+    pub fn binary(a: Self, connective: Connective, b: Self) -> Self {
+        Self::Binary(Box::new(a), connective, Box::new(b))
+    }
+
+    pub fn forall(ident: Ident, sort: Sort, ty: Self) -> Self {
+        Self::Forall(ident, sort, Box::new(ty))
+    }
+
+    pub fn exists(ident: Ident, sort: Sort, ty: Self) -> Self {
+        Self::Exists(ident, sort, Box::new(ty))
+    }
+
+    pub fn implies(prop: Proposition, ty: Self) -> Self {
+        Self::Implies(prop, Box::new(ty))
+    }
+
+    pub fn with(ty: Self, prop: Proposition) -> Self {
+        Self::With(Box::new(ty), prop)
+    }
+
+    pub fn vec(term: Term, ty: Self) -> Self {
+        Self::Vec(term, Box::new(ty))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,6 +252,14 @@ impl Term {
                 r.substitute(this, that);
             }
         }
+    }
+
+    pub fn succ(term: Term) -> Self {
+        Self::Succ(Box::new(term))
+    }
+
+    pub fn binary(a: Self, connective: Connective, b: Self) -> Self {
+        Self::Binary(Box::new(a), connective, Box::new(b))
     }
 }
 
