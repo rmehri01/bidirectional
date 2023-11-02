@@ -47,7 +47,13 @@ impl Branches {
                         conses.0.push_front(Branch(ps, e));
                     }
                     None => {}
-                    _ => panic!("unexpected pattern when expanding vec patterns"),
+                    Some(Pattern::Var(_) | Pattern::Wildcard) => {
+                        nils.0.push_front(Branch(ps.clone(), e.clone()));
+                        ps.push_front(Pattern::Wildcard);
+                        ps.push_front(Pattern::Wildcard);
+                        conses.0.push_front(Branch(ps, e));
+                    }
+                    Some(pat) => panic!("unexpected pattern when expanding vec patterns: {pat:?}"),
                 }
 
                 (nils, conses)

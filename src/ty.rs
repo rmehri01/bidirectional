@@ -161,14 +161,16 @@ pub enum Term {
 }
 
 impl Term {
-    pub fn to_ty(self) -> Type {
+    pub fn into_ty(self) -> Type {
         match self {
             // TODO: should this be a panic? also in applying ctx to ty
             Self::Zero | Self::Succ(_) => panic!("cannot convert a Natural term to a type"),
             Self::Unit => Type::Unit,
             Self::ForallVar(f) => Type::ForallVar(f),
             Self::ExistsVar(e) => Type::ExistsVar(e),
-            Self::Binary(a, op, b) => Type::Binary(Box::new(a.to_ty()), op, Box::new(b.to_ty())),
+            Self::Binary(a, op, b) => {
+                Type::Binary(Box::new(a.into_ty()), op, Box::new(b.into_ty()))
+            }
         }
     }
 

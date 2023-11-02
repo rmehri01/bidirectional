@@ -2,18 +2,18 @@ use std::collections::{HashSet, VecDeque};
 
 use crate::{
     pat::{Branch, Branches, Pattern},
-    syntax::{Expr, Ident, Spine, Value},
+    syntax::{Expr, Ident, Spine},
     ty::{
         Connective, ExistsVar, ForallVar, Polarity, Principality, Proposition, Sort, Term, TyVar,
         Type,
     },
 };
 
-#[derive(Debug, Clone)]
-struct TyCtx(Vec<Entry>);
+#[derive(Debug, Clone, Default)]
+pub struct TyCtx(Vec<Entry>);
 
 #[derive(Debug, Clone, PartialEq)]
-enum Entry {
+pub enum Entry {
     Unsolved(TyVar, Sort),
     ExprTyping(Ident, Type, Principality),
     SolvedExists(ExistsVar, Sort, Term),
@@ -22,6 +22,10 @@ enum Entry {
 }
 
 impl TyCtx {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Extend `self` with the given `entry`.
     fn extend(&self, entry: Entry) -> Self {
         self.extend_many([entry])
@@ -57,7 +61,8 @@ impl TyCtx {
             .iter()
             .position(|it| *it == entry)
             .expect("entry should be found in this context");
-        Self(self.0.splice(idx..=idx, entries).collect())
+        self.0.splice(idx..=idx, entries);
+        Self(self.0)
     }
 
     /// Substitute for solved existential variables in `ty`.
@@ -65,7 +70,7 @@ impl TyCtx {
         match ty {
             Type::ForallVar(ref alpha) => self
                 .find_forall_solution(alpha)
-                .map(|term| self.apply_to_term(term).to_ty())
+                .map(|term| self.apply_to_term(term).into_ty())
                 .unwrap_or(ty),
             Type::Implies(prop, ty) => {
                 Type::Implies(self.apply_to_prop(prop), Box::new(self.apply_to_ty(*ty)))
@@ -83,7 +88,7 @@ impl TyCtx {
             }
             Type::ExistsVar(ref alpha_hat) => self
                 .find_exists_solution(alpha_hat)
-                .map(|term| self.apply_to_term(term).to_ty())
+                .map(|term| self.apply_to_term(term).into_ty())
                 .unwrap_or(ty),
             Type::Forall(ident, sort, ty) => {
                 Type::Forall(ident, sort, Box::new(self.apply_to_ty(*ty)))
@@ -98,7 +103,9 @@ impl TyCtx {
     /// Substitute for solved existential variables in `term`.
     fn apply_to_term(&self, term: Term) -> Term {
         match term {
-            Term::Zero | Term::Succ(_) | Term::Unit => term,
+            // TODO: should this be defined on zero and succ?
+            Term::Zero | Term::Unit => term,
+            Term::Succ(t) => Term::Succ(Box::new(self.apply_to_term(*t))),
             Term::ForallVar(ref alpha) => self
                 .find_forall_solution(alpha)
                 .map(|term| self.apply_to_term(term))
@@ -121,14 +128,14 @@ impl TyCtx {
     }
 
     fn find_forall_solution(&self, for_var: &ForallVar) -> Option<Term> {
-        self.0.iter().find_map(|entry| match entry {
+        self.0.iter().rev().find_map(|entry| match entry {
             Entry::SolvedForall(alpha, monotype) if for_var == alpha => Some(monotype.clone()),
             _ => None,
         })
     }
 
     fn find_exists_solution(&self, for_var: &ExistsVar) -> Option<Term> {
-        self.0.iter().find_map(|entry| match entry {
+        self.0.iter().rev().find_map(|entry| match entry {
             Entry::SolvedExists(alpha_hat, _, monotype) if for_var == alpha_hat => {
                 Some(monotype.clone())
             }
@@ -137,7 +144,7 @@ impl TyCtx {
     }
 
     fn find_expr_solution(&self, for_var: &Ident) -> Option<(Type, Principality)> {
-        self.0.iter().find_map(|entry| match entry {
+        self.0.iter().rev().find_map(|entry| match entry {
             Entry::ExprTyping(x, ty, p) if for_var == x => Some((ty.clone(), *p)),
             _ => None,
         })
@@ -145,7 +152,7 @@ impl TyCtx {
 
     // TODO: not sure how necessary this is, seems like overlaps with find_solution?
     fn find_unsolved(&self, var: &TyVar) -> Option<Sort> {
-        self.0.iter().find_map(|entry| match entry {
+        self.0.iter().rev().find_map(|entry| match entry {
             Entry::Unsolved(found_var, sort) if found_var == var => Some(*sort),
             _ => None,
         })
@@ -153,7 +160,7 @@ impl TyCtx {
 
     // TODO: not sure how necessary this is, seems like overlaps with find_solution?
     fn is_unsolved(&self, var: &TyVar) -> bool {
-        self.find_unsolved(var).is_none()
+        self.find_unsolved(var).is_some()
     }
 
     /// Γ ⊢ e <== A p ⊣ ∆, under `self`, expression `expr` checks against type `ty` with output context ∆.
@@ -164,7 +171,7 @@ impl TyCtx {
                 let entry = Entry::ExprTyping(x, a.clone(), p);
                 // TODO: not sure if we need a separate check_value
                 self.extend(entry.clone())
-                    .check_expr_ty(v.to_expr(), a, p)
+                    .check_expr_ty(v.into_expr(), a, p)
                     .drop_from(entry)
             }
             // 1I
@@ -192,7 +199,7 @@ impl TyCtx {
             (e, Type::Exists(alpha, sort, mut a), _) if e.is_intro_form() => {
                 // TODO: not sure if need to make exists var instead
                 let alpha = ForallVar(alpha.0);
-                let alpha_hat = ExistsVar::fresh("α̂");
+                let alpha_hat = ExistsVar::fresh("α^");
                 a.substitute(alpha, alpha_hat);
                 self.extend(Entry::Unsolved(TyVar::Forall(alpha), sort))
                     .check_expr_ty(e, *a, Principality::NonPrincipal)
@@ -234,8 +241,8 @@ impl TyCtx {
                     .0
                     .contains(&Entry::Unsolved(TyVar::Exists(alpha_hat), Sort::Monotype)) =>
             {
-                let alpha_hat1 = ExistsVar::fresh("α̂");
-                let alpha_hat2 = ExistsVar::fresh("α̂");
+                let alpha_hat1 = ExistsVar::fresh("α^");
+                let alpha_hat2 = ExistsVar::fresh("α^");
 
                 let x_entry =
                     Entry::ExprTyping(x, Type::ExistsVar(alpha_hat1), Principality::NonPrincipal);
@@ -292,8 +299,8 @@ impl TyCtx {
                     .0
                     .contains(&Entry::Unsolved(TyVar::Exists(alpha_hat), Sort::Monotype)) =>
             {
-                let alpha_hat1 = ExistsVar::fresh("α̂");
-                let alpha_hat2 = ExistsVar::fresh("α̂");
+                let alpha_hat1 = ExistsVar::fresh("α^");
+                let alpha_hat2 = ExistsVar::fresh("α^");
 
                 let new_tcx = self.replace_with_many(
                     Entry::Unsolved(TyVar::Exists(alpha_hat), Sort::Monotype),
@@ -319,8 +326,8 @@ impl TyCtx {
                     .0
                     .contains(&Entry::Unsolved(TyVar::Exists(alpha_hat), Sort::Monotype)) =>
             {
-                let alpha_hat1 = ExistsVar::fresh("α̂");
-                let alpha_hat2 = ExistsVar::fresh("α̂");
+                let alpha_hat1 = ExistsVar::fresh("α^");
+                let alpha_hat2 = ExistsVar::fresh("α^");
 
                 let new_tcx = self.replace_with_many(
                     Entry::Unsolved(TyVar::Exists(alpha_hat), Sort::Monotype),
@@ -354,8 +361,8 @@ impl TyCtx {
                     .0
                     .contains(&Entry::Unsolved(TyVar::Exists(alpha_hat), Sort::Monotype)) =>
             {
-                let alpha_hat1 = ExistsVar::fresh("α̂");
-                let alpha_hat2 = ExistsVar::fresh("α̂");
+                let alpha_hat1 = ExistsVar::fresh("α^");
+                let alpha_hat2 = ExistsVar::fresh("α^");
 
                 let new_tcx = self.replace_with_many(
                     Entry::Unsolved(TyVar::Exists(alpha_hat), Sort::Monotype),
@@ -387,7 +394,7 @@ impl TyCtx {
             (Expr::Nil, Type::Vec(t, _), _) => self.check_prop(Proposition(t, Term::Zero)),
             // Cons
             (Expr::Cons(e1, e2), Type::Vec(t, a), p) => {
-                let alpha_hat = ExistsVar::fresh("α̂");
+                let alpha_hat = ExistsVar::fresh("α^");
                 let marker = Entry::Marker(TyVar::Exists(alpha_hat));
 
                 let new_tcx = self
@@ -607,23 +614,33 @@ impl TyCtx {
         let mark = ForallVar::fresh("P");
         let marker = Entry::Marker(TyVar::Forall(mark));
 
-        let maybe_tcx = self.extend(marker.clone()).unify(t1, t2, Sort::Monotype);
+        // TODO: what should this sort be
+        let maybe_tcx = self.extend(marker.clone()).unify(t1, t2, Sort::Natural);
         match maybe_tcx {
             // Match⊥
             MaybeTcx::Bottom => self,
             // MatchUnify
-            MaybeTcx::Valid(new_tcx) => new_tcx
-                .check_branch(branch, pattern_tys, Principality::Principal, body_ty, p)
-                .drop_from(marker),
+            MaybeTcx::Valid(new_tcx) => {
+                // TODO: should we sub here? paper doesn't say so but I think it should?
+                // let new_tys = pattern_tys
+                //     .into_iter()
+                //     .map(|ty| new_tcx.apply_to_ty(ty))
+                //     .collect();
+                // let new_body_ty = new_tcx.apply_to_ty(body_ty);
+                new_tcx
+                    .check_branch(branch, pattern_tys, Principality::Principal, body_ty, p)
+                    .drop_from(marker)
+            }
         }
     }
 
     /// Γ ⊢ e ==> A p ⊣ ∆, under `self`, expression `expr` synthesizes output type `A` with output context ∆.
-    fn synth_expr_ty(self, expr: Expr) -> (Type, Principality, Self) {
+    pub fn synth_expr_ty(self, expr: Expr) -> (Type, Principality, Self) {
         match expr {
             // Var
             Expr::Var(var) if self.find_expr_solution(&var).is_some() => {
                 let (a, p) = self.find_expr_solution(&var).unwrap();
+                // TODO: not sure if needs sub or not, seems to overwrite in recursive case, maybe need to rename quantifier vars or something?
                 (self.apply_to_ty(a), p, self)
             }
             // Anno
@@ -641,6 +658,8 @@ impl TyCtx {
                 let (a, p, new_tcx) = self.synth_expr_ty(*e);
                 new_tcx.apply_spine_recovering(s, a, p)
             }
+            // Add straightforward rules, such as for unit
+            Expr::Unit => (Type::Unit, Principality::Principal, self),
             _ => panic!("unexpected pattern in synth"),
         }
     }
@@ -654,7 +673,7 @@ impl TyCtx {
             (Some(e), Type::Forall(alpha, sort, mut a)) => {
                 s.0.push_front(e);
                 let alpha = ForallVar(alpha.0);
-                let alpha_hat = ExistsVar::fresh("α̂");
+                let alpha_hat = ExistsVar::fresh("α^");
                 a.substitute(alpha, alpha_hat);
                 self.extend(Entry::Unsolved(TyVar::Exists(alpha_hat), sort))
                     .apply_spine(s, *a, Principality::NonPrincipal)
@@ -680,8 +699,8 @@ impl TyCtx {
                     .0
                     .contains(&Entry::Unsolved(TyVar::Exists(alpha_hat), Sort::Monotype)) =>
             {
-                let alpha_hat1 = ExistsVar::fresh("α̂");
-                let alpha_hat2 = ExistsVar::fresh("α̂");
+                let alpha_hat1 = ExistsVar::fresh("α^");
+                let alpha_hat2 = ExistsVar::fresh("α^");
 
                 let new_tcx = self.replace_with_many(
                     Entry::Unsolved(TyVar::Exists(alpha_hat), Sort::Monotype),
@@ -741,7 +760,7 @@ impl TyCtx {
             // <:∀L
             (Type::Forall(alpha, sort, mut a), b, Polarity::Negative) if !b.is_forall() => {
                 let alpha = ForallVar(alpha.0);
-                let alpha_hat = ExistsVar::fresh("α̂");
+                let alpha_hat = ExistsVar::fresh("α^");
                 let marker = Entry::Marker(TyVar::Forall(alpha));
                 let new_tcx = self.extend_many([
                     marker.clone(),
@@ -772,7 +791,7 @@ impl TyCtx {
             (a, Type::Forall(beta, sort, mut b), Polarity::Positive) if !a.is_exists() => {
                 // TODO: not sure if need to make exists var instead
                 let beta = ForallVar(beta.0);
-                let beta_hat = ExistsVar::fresh("α̂");
+                let beta_hat = ExistsVar::fresh("α^");
                 let marker = Entry::Marker(TyVar::Forall(beta));
                 let new_tcx = self.extend_many([
                     marker.clone(),
@@ -859,7 +878,9 @@ impl TyCtx {
             {
                 self.instantiate(alpha_hat, term, sort)
             }
-            _ => panic!("unexpected pattern for checking term equation"),
+            (term1, term2, sort) => panic!(
+                "unexpected pattern for checking term equation: {term1:?} {term2:?} {sort:?}"
+            ),
         }
     }
 
@@ -934,8 +955,43 @@ impl TyCtx {
 
     /// Γ ⊢ A ≡ B ⊣ ∆, under `self`, check that `a` is equivalent to `b` with output ctx ∆.
     fn check_terms_equal(self, a: Term, b: Term) -> Self {
+        // TODO: duplicated from ty, not sure if this is right
+        match (a, b) {
+            // ≡Var
+            (Term::ForallVar(alpha1), Term::ForallVar(alpha2)) if alpha1 == alpha2 => self,
+            // ≡Exvar
+            (Term::ExistsVar(alpha_hat1), Term::ExistsVar(alpha_hat2))
+                if alpha_hat1 == alpha_hat2 =>
+            {
+                self
+            }
+            // ≡Unit
+            (Term::Unit, Term::Unit) => self,
+            // ≡⊕
+            (Term::Binary(a1, op1, a2), Term::Binary(b1, op2, b2)) if op1 == op2 => {
+                let new_tcx = self.check_terms_equal(*a1, *b1);
+
+                let new_a2 = new_tcx.apply_to_term(*a2);
+                let new_b2 = new_tcx.apply_to_term(*b2);
+                new_tcx.check_terms_equal(new_a2, new_b2)
+            }
+            // ≡InstantiateL
+            // ≡InstantiateR
+            (Term::ExistsVar(alpha_hat), tau) | (tau, Term::ExistsVar(alpha_hat))
+                if !tau.clone().free_exists_vars().contains(&alpha_hat)
+                    && self.is_unsolved(&TyVar::Exists(alpha_hat)) =>
+            {
+                // TODO: what sort
+                self.instantiate(alpha_hat, tau, Sort::Natural)
+            }
+            _ => panic!("unexpected pattern for checking that terms are equal"),
+        }
         // TODO: not sure if this is just normal equality
-        todo!()
+        // if a == b {
+        //     self
+        // } else {
+        //     panic!("terms not equal: {self:#?} {a:?} {b:?}")
+        // }
     }
 
     /// Γ ⊢ α̂ := t : κ ⊣ ∆, under `self`, instantiate `var` such that `var` = `t` with output ctx ∆.
@@ -947,8 +1003,12 @@ impl TyCtx {
                 Entry::SolvedExists(var, Sort::Natural, Term::Zero),
             ),
             // InstSucc
-            (Term::Succ(t1), Sort::Natural) => {
-                let alpha_hat1 = ExistsVar::fresh("α̂");
+            (Term::Succ(t1), Sort::Natural)
+                if self
+                    .0
+                    .contains(&Entry::Unsolved(TyVar::Exists(var), Sort::Natural)) =>
+            {
+                let alpha_hat1 = ExistsVar::fresh("α^");
                 let new_tcx = self.replace(
                     Entry::Unsolved(TyVar::Exists(var), Sort::Natural),
                     Entry::SolvedExists(
@@ -961,8 +1021,8 @@ impl TyCtx {
             }
             // InstBin
             (Term::Binary(t1, op, t2), Sort::Monotype) => {
-                let alpha_hat1 = ExistsVar::fresh("α̂");
-                let alpha_hat2 = ExistsVar::fresh("α̂");
+                let alpha_hat1 = ExistsVar::fresh("α^");
+                let alpha_hat2 = ExistsVar::fresh("α^");
 
                 let new_tcx = self
                     .replace_with_many(
@@ -1009,7 +1069,9 @@ impl TyCtx {
                     Entry::SolvedExists(var, sort, term),
                 )
             }
-            _ => panic!("unexpected pattern when instantiating existential var"),
+            (term, sort) => {
+                panic!("unexpected pattern when instantiating existential var: {term:?} {sort:?}")
+            }
         }
     }
 
@@ -1373,7 +1435,9 @@ impl TyCtx {
             }
             // ElimeqClash
             (term1, term2, _) if term1.clashes_with(&term2) => MaybeTcx::Bottom,
-            _ => panic!("unexpected unification pattern for two terms"),
+            (term1, term2, sort) => {
+                panic!("unexpected unification pattern for two terms: {term1:?} {term2:?} {sort:?}")
+            }
         }
     }
 }
@@ -1382,4 +1446,37 @@ impl TyCtx {
 enum MaybeTcx {
     Valid(TyCtx),
     Bottom,
+}
+
+#[cfg(test)]
+mod tests {
+    use internment::Intern;
+
+    use super::*;
+
+    #[test]
+    fn from_paper() {
+        let id = Ident(Intern::new("id".to_string()));
+        let alpha = Ident(Intern::new("α".to_string()));
+        let tcx = TyCtx::new().extend(Entry::ExprTyping(
+            id,
+            Type::Forall(
+                alpha,
+                Sort::Monotype,
+                Box::new(Type::Binary(
+                    Box::new(Type::ForallVar(ForallVar(alpha.0))),
+                    Connective::Function,
+                    Box::new(Type::ForallVar(ForallVar(alpha.0))),
+                )),
+            ),
+            Principality::Principal,
+        ));
+
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::App(
+            Box::new(Expr::Var(id)),
+            Spine(VecDeque::from([Expr::Unit])),
+        ));
+        assert_eq!(ty, Type::Unit);
+        assert_eq!(p, Principality::Principal);
+    }
 }

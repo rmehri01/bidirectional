@@ -68,18 +68,18 @@ pub enum Value {
 }
 
 impl Value {
-    pub fn to_expr(self) -> Expr {
+    pub fn into_expr(self) -> Expr {
         match self {
             Self::Var(v) => Expr::Var(v),
             Self::Unit => Expr::Unit,
             Self::Function(x, e) => Expr::Function(x, e),
             Self::Fix(x, v) => Expr::Fix(x, *v),
-            Self::Annotation(v, t) => Expr::Annotation(Box::new(v.to_expr()), t),
-            Self::Pair(v1, v2) => Expr::Pair(Box::new(v1.to_expr()), Box::new(v2.to_expr())),
-            Self::Inj1(v) => Expr::Inj1(Box::new(v.to_expr())),
-            Self::Inj2(v) => Expr::Inj2(Box::new(v.to_expr())),
+            Self::Annotation(v, t) => Expr::Annotation(Box::new(v.into_expr()), t),
+            Self::Pair(v1, v2) => Expr::Pair(Box::new(v1.into_expr()), Box::new(v2.into_expr())),
+            Self::Inj1(v) => Expr::Inj1(Box::new(v.into_expr())),
+            Self::Inj2(v) => Expr::Inj2(Box::new(v.into_expr())),
             Self::Nil => Expr::Nil,
-            Self::Cons(hd, tl) => Expr::Cons(Box::new(hd.to_expr()), Box::new(tl.to_expr())),
+            Self::Cons(hd, tl) => Expr::Cons(Box::new(hd.into_expr()), Box::new(tl.into_expr())),
         }
     }
 }
