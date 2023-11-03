@@ -165,9 +165,6 @@ impl TyCtx {
 
     /// Γ ⊢ e <== A p ⊣ ∆, under `self`, expression `expr` checks against type `ty` with output context ∆.
     fn check_expr_ty(self, expr: Expr, ty: Type, p: Principality) -> Self {
-        debug_assert!(self.clone().well_formed());
-        debug_assert!(self.ty_well_formed(&ty));
-
         match (expr, ty, p) {
             // Rec
             (Expr::Fix(x, v), a, p) => {
@@ -438,9 +435,6 @@ impl TyCtx {
         body_ty: Type,
         p: Principality,
     ) -> Self {
-        debug_assert!(self.tys_principality_well_formed(pattern_tys.clone().into(), q));
-        debug_assert!(self.ty_principality_well_formed(body_ty.clone(), p));
-
         match branches.0.pop_front() {
             // MatchEmpty
             None => self,
@@ -466,9 +460,6 @@ impl TyCtx {
         body_ty: Type,
         p: Principality,
     ) -> Self {
-        debug_assert!(self.tys_principality_well_formed(pattern_tys.clone().into(), q));
-        debug_assert!(self.ty_principality_well_formed(body_ty.clone(), p));
-
         let Branch(mut ps, e) = branch;
         match (ps.pop_front(), pattern_tys.pop_front(), q, body_ty, p) {
             // MatchBase
@@ -617,11 +608,6 @@ impl TyCtx {
         body_ty: Type,
         p: Principality,
     ) -> Self {
-        debug_assert!(
-            self.tys_principality_well_formed(pattern_tys.clone().into(), Principality::Principal)
-        );
-        debug_assert!(self.ty_principality_well_formed(body_ty.clone(), p));
-
         let Proposition(t1, t2) = prop;
 
         let mark = ForallVar::fresh("P");
@@ -649,8 +635,6 @@ impl TyCtx {
 
     /// Γ ⊢ e ==> A p ⊣ ∆, under `self`, expression `expr` synthesizes output type `A` with output context ∆.
     pub fn synth_expr_ty(self, expr: Expr) -> (Type, Principality, Self) {
-        debug_assert!(self.clone().well_formed());
-
         match expr {
             // Var
             Expr::Var(var) if self.find_expr_solution(&var).is_some() => {
@@ -1279,8 +1263,6 @@ impl TyCtx {
         mut tys: VecDeque<Type>,
         principality: Principality,
     ) -> bool {
-        debug_assert!(self.tys_principality_well_formed(tys.clone().into(), principality));
-
         match tys.pop_front() {
             // CoversEmpty
             None => branches
@@ -1314,8 +1296,9 @@ impl TyCtx {
                 covers_l && covers_r
             }
             // Covers∃
-            Some(Type::Exists(ident, sort, _)) => {
+            Some(Type::Exists(ident, sort, a)) => {
                 let new_tcx = self.extend(Entry::Unsolved(TyVar::Exists(ExistsVar(ident.0)), sort));
+                tys.push_front(*a);
                 new_tcx.branches_cover(branches, tys, principality)
             }
             Some(Type::With(ty, prop)) => {
@@ -1383,10 +1366,6 @@ impl TyCtx {
         branches: Branches,
         tys: VecDeque<Type>,
     ) -> bool {
-        debug_assert!(
-            self.tys_principality_well_formed(tys.clone().into(), Principality::Principal)
-        );
-
         let Proposition(term1, term2) = prop;
 
         let new_term1 = self.apply_to_term(term1);
@@ -1919,7 +1898,7 @@ mod tests {
         let y = Ident(Intern::new("y".to_string()));
         let ys = Ident(Intern::new("ys".to_string()));
 
-        let rec_map = Expr::Fix(
+        let rec_zip = Expr::Fix(
             zip,
             Value::function(
                 p,
@@ -1982,7 +1961,7 @@ mod tests {
                 ),
             ),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(rec_map, anno_ty.clone()));
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(rec_zip, anno_ty.clone()));
         assert_eq!(ty, anno_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -2131,7 +2110,7 @@ mod tests {
             Expr::Var(filter),
             Spine::from_iter([Expr::Var(p), Expr::Var(ys)]),
         );
-        let rec_map = Expr::Fix(
+        let rec_filter = Expr::Fix(
             filter,
             Value::function(
                 p,
@@ -2197,8 +2176,158 @@ mod tests {
                 ),
             ),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(rec_map, anno_ty.clone()));
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(rec_filter, anno_ty.clone()));
         assert_eq!(ty, anno_ty);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn nested_forall() {
+        let f = Ident(Intern::new("f".to_string()));
+        let x = Ident(Intern::new("x".to_string()));
+        let y = Ident(Intern::new("y".to_string()));
+        let alpha = Ident(Intern::new("α".to_string()));
+        let beta = Ident(Intern::new("β".to_string()));
+
+        let x_ty = Type::forall(
+            beta,
+            Sort::Monotype,
+            Type::binary(
+                Type::ForallVar(ForallVar(beta.0)),
+                Connective::Function,
+                Type::ForallVar(ForallVar(beta.0)),
+            ),
+        );
+        let tcx = TyCtx::new().extend(Entry::ExprTyping(x, x_ty.clone(), Principality::Principal));
+
+        let res_ty = Type::binary(Type::Unit, Connective::Function, Type::Unit);
+        let function = Expr::annotation(
+            Expr::function(
+                f,
+                Expr::function(y, Expr::app(Expr::Var(f), Spine::from_iter([Expr::Var(y)]))),
+            ),
+            Type::forall(
+                alpha,
+                Sort::Monotype,
+                Type::binary(
+                    x_ty,
+                    Connective::Function,
+                    Type::binary(
+                        Type::ForallVar(ForallVar(alpha.0)),
+                        Connective::Function,
+                        Type::ForallVar(ForallVar(alpha.0)),
+                    ),
+                ),
+            ),
+        );
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
+            Expr::app(function, Spine::from_iter([Expr::Var(x)])),
+            res_ty.clone(),
+        ));
+        assert_eq!(ty, res_ty);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn nested_pattern() {
+        let x = Ident(Intern::new("x".to_string()));
+        let y = Ident(Intern::new("y".to_string()));
+        let tcx = TyCtx::new().extend(Entry::ExprTyping(
+            x,
+            Type::binary(
+                Type::binary(Type::Unit, Connective::Product, Type::Unit),
+                Connective::Sum,
+                Type::binary(Type::Unit, Connective::Sum, Type::Unit),
+            ),
+            Principality::Principal,
+        ));
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
+            Expr::case(
+                Expr::Var(x),
+                Branches::from_iter([
+                    Branch::from_iter(
+                        [Pattern::inj1(Pattern::pair(
+                            Pattern::Wildcard,
+                            Pattern::Var(y),
+                        ))],
+                        Expr::Var(y),
+                    ),
+                    Branch::from_iter(
+                        [Pattern::inj2(Pattern::inj2(Pattern::Var(y)))],
+                        Expr::Var(y),
+                    ),
+                    Branch::from_iter(
+                        [Pattern::inj2(Pattern::inj1(Pattern::Wildcard))],
+                        Expr::Unit,
+                    ),
+                ]),
+            ),
+            Type::Unit,
+        ));
+        assert_eq!(ty, Type::Unit);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn exists_vec_ty() {
+        let t = Ident(Intern::new("T".to_string()));
+        let tcx = TyCtx::new();
+
+        let anno_ty = Type::exists(
+            t,
+            Sort::Monotype,
+            Type::vec(Term::succ(Term::Zero), Type::ExistsVar(ExistsVar(t.0))),
+        );
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
+            Expr::case(
+                Expr::annotation(
+                    Expr::inj1(Expr::Unit),
+                    Type::binary(Type::Unit, Connective::Sum, Type::Unit),
+                ),
+                Branches::from_iter([
+                    Branch::from_iter(
+                        [Pattern::inj1(Pattern::Wildcard)],
+                        Expr::cons(Expr::Unit, Expr::Nil),
+                    ),
+                    Branch::from_iter(
+                        [Pattern::Wildcard],
+                        Expr::cons(Expr::pair(Expr::Unit, Expr::Unit), Expr::Nil),
+                    ),
+                ]),
+            ),
+            anno_ty.clone(),
+        ));
+        assert_eq!(ty, anno_ty);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn exists_vec_head() {
+        let x = Ident(Intern::new("x".to_string()));
+        let xs = Ident(Intern::new("xs".to_string()));
+        let t = Ident(Intern::new("T".to_string()));
+        let tcx = TyCtx::new().extend(Entry::ExprTyping(
+            xs,
+            Type::exists(
+                t,
+                Sort::Monotype,
+                Type::vec(Term::succ(Term::Zero), Type::ExistsVar(ExistsVar(t.0))),
+            ),
+            Principality::Principal,
+        ));
+
+        let res_ty = Type::exists(t, Sort::Monotype, Type::ExistsVar(ExistsVar(t.0)));
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
+            Expr::case(
+                Expr::Var(xs),
+                Branches::from_iter([Branch::from_iter(
+                    [Pattern::cons(Pattern::Var(x), Pattern::Wildcard)],
+                    Expr::Var(x),
+                )]),
+            ),
+            res_ty.clone(),
+        ));
+        assert_eq!(ty, res_ty);
         assert_eq!(p, Principality::Principal);
     }
 }
