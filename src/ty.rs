@@ -97,11 +97,12 @@ impl Type {
                     free_vars_with_bound(ty, bound_vars)
                 }
                 Type::Implies(_, ty) | Type::With(ty, _) => free_vars_with_bound(ty, bound_vars),
-                Type::Vec(term, ty) => term
-                    .free_exists_vars()
-                    .into_iter()
-                    .chain(free_vars_with_bound(ty, bound_vars))
-                    .collect(),
+                Type::Vec(term, ty) => {
+                    let mut free_vars = term.free_exists_vars();
+                    free_vars.retain(|e| !bound_vars.contains(e));
+                    free_vars.extend(free_vars_with_bound(ty, bound_vars));
+                    free_vars
+                }
             }
         }
 
@@ -110,7 +111,7 @@ impl Type {
 
     // TODO: capture avoiding?
     /// [α̂/α]A, substitute all instances of `this` for `that` in `self`.
-    pub fn substitute(&mut self, this: ForallVar, that: ExistsVar) {
+    pub fn substitute_forall(&mut self, this: ForallVar, that: ExistsVar) {
         match self {
             Self::Unit => {}
             Self::ExistsVar(_) => {}
@@ -120,23 +121,55 @@ impl Type {
                 }
             }
             Self::Binary(l, _, r) => {
-                l.substitute(this, that);
-                r.substitute(this, that);
+                l.substitute_forall(this, that);
+                r.substitute_forall(this, that);
             }
             Self::Forall(ident, _, body) => {
                 if ident.0 != this.0 {
-                    body.substitute(this, that);
+                    body.substitute_forall(this, that);
                 }
             }
-            Self::Exists(_, _, body) => body.substitute(this, that),
+            Self::Exists(_, _, body) => body.substitute_forall(this, that),
             Self::Implies(Proposition(t1, t2), ty) | Self::With(ty, Proposition(t1, t2)) => {
-                t1.substitute(this, that);
-                t2.substitute(this, that);
-                ty.substitute(this, that);
+                t1.substitute_forall(this, that);
+                t2.substitute_forall(this, that);
+                ty.substitute_forall(this, that);
             }
             Self::Vec(term, ty) => {
-                term.substitute(this, that);
-                ty.substitute(this, that);
+                term.substitute_forall(this, that);
+                ty.substitute_forall(this, that);
+            }
+        }
+    }
+
+    /// [α̂/α]A, substitute all instances of `this` for `that` in `self`.
+    pub fn substitute_exists(&mut self, this: ExistsVar, that: ExistsVar) {
+        match self {
+            Self::Unit => {}
+            Self::ForallVar(_) => {}
+            Self::ExistsVar(var) => {
+                if *var == this {
+                    *self = Self::ExistsVar(that)
+                }
+            }
+            Self::Binary(l, _, r) => {
+                l.substitute_exists(this, that);
+                r.substitute_exists(this, that);
+            }
+            Self::Exists(ident, _, body) => {
+                if ident.0 != this.0 {
+                    body.substitute_exists(this, that);
+                }
+            }
+            Self::Forall(_, _, body) => body.substitute_exists(this, that),
+            Self::Implies(Proposition(t1, t2), ty) | Self::With(ty, Proposition(t1, t2)) => {
+                t1.substitute_exists(this, that);
+                t2.substitute_exists(this, that);
+                ty.substitute_exists(this, that);
+            }
+            Self::Vec(term, ty) => {
+                term.substitute_exists(this, that);
+                ty.substitute_exists(this, that);
             }
         }
     }
@@ -236,10 +269,10 @@ impl Term {
     }
 
     /// [α̂/α]A, substitute all instances of `this` for `that` in `self`.
-    pub fn substitute(&mut self, this: ForallVar, that: ExistsVar) {
+    pub fn substitute_forall(&mut self, this: ForallVar, that: ExistsVar) {
         match self {
             Self::Zero => {}
-            Self::Succ(t) => t.substitute(this, that),
+            Self::Succ(t) => t.substitute_forall(this, that),
             Self::Unit => {}
             Self::ExistsVar(_) => {}
             Self::ForallVar(var) => {
@@ -248,8 +281,27 @@ impl Term {
                 }
             }
             Self::Binary(l, _, r) => {
-                l.substitute(this, that);
-                r.substitute(this, that);
+                l.substitute_forall(this, that);
+                r.substitute_forall(this, that);
+            }
+        }
+    }
+
+    /// [α̂/α]A, substitute all instances of `this` for `that` in `self`.
+    pub fn substitute_exists(&mut self, this: ExistsVar, that: ExistsVar) {
+        match self {
+            Self::Zero => {}
+            Self::Succ(t) => t.substitute_exists(this, that),
+            Self::Unit => {}
+            Self::ForallVar(_) => {}
+            Self::ExistsVar(var) => {
+                if *var == this {
+                    *self = Self::ExistsVar(that)
+                }
+            }
+            Self::Binary(l, _, r) => {
+                l.substitute_exists(this, that);
+                r.substitute_exists(this, that);
             }
         }
     }
