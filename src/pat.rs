@@ -67,7 +67,7 @@ impl Branches {
 
     /// Π ~>× Π', expand head pair patterns in `self`.
     pub fn expand_pair_pats(mut self) -> Self {
-        for Branch(ps, _) in self.0.iter_mut() {
+        for Branch(ps, _) in &mut self.0 {
             match ps.pop_front() {
                 Some(Pattern::Pair(p1, p2)) => {
                     ps.push_front(*p2);
@@ -114,7 +114,7 @@ impl Branches {
 
     /// Π ~>var Π', remove head variable and wildcard patterns from `self`.
     pub fn expand_var_pats(mut self) -> Self {
-        for Branch(ps, _) in self.0.iter_mut() {
+        for Branch(ps, _) in &mut self.0 {
             match ps.pop_front() {
                 Some(Pattern::Var(_) | Pattern::Wildcard) => {}
                 None => {}
@@ -127,7 +127,7 @@ impl Branches {
 
     /// Π ~>1 Π', remove head variable, wildcard, and unit patterns patterns from `self`.
     pub fn expand_unit_pats(mut self) -> Self {
-        for Branch(ps, _) in self.0.iter_mut() {
+        for Branch(ps, _) in &mut self.0 {
             match ps.pop_front() {
                 Some(Pattern::Var(_) | Pattern::Wildcard | Pattern::Unit) => {}
                 None => {}

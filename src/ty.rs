@@ -81,10 +81,10 @@ impl Type {
                 Type::Unit => HashSet::new(),
                 Type::ForallVar(_) => HashSet::new(),
                 Type::ExistsVar(var) => {
-                    if !bound_vars.contains(var) {
-                        HashSet::from([*var])
-                    } else {
+                    if bound_vars.contains(var) {
                         HashSet::new()
+                    } else {
+                        HashSet::from([*var])
                     }
                 }
                 Type::Binary(l, _, r) => free_vars_with_bound(l, bound_vars.clone())
@@ -117,7 +117,7 @@ impl Type {
             Self::ExistsVar(_) => {}
             Self::ForallVar(var) => {
                 if *var == this {
-                    *self = Self::ExistsVar(that)
+                    *self = Self::ExistsVar(that);
                 }
             }
             Self::Binary(l, _, r) => {
@@ -149,7 +149,7 @@ impl Type {
             Self::ForallVar(_) => {}
             Self::ExistsVar(var) => {
                 if *var == this {
-                    *self = Self::ExistsVar(that)
+                    *self = Self::ExistsVar(that);
                 }
             }
             Self::Binary(l, _, r) => {
@@ -206,7 +206,7 @@ pub enum Sort {
 }
 
 // TODO: combine terms and types?
-/// Terms and monotypes share the same grammar but are distinguished by [Sort].
+/// Terms and monotypes share the same grammar but are distinguished by [`Sort`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Term {
     Zero,
@@ -277,7 +277,7 @@ impl Term {
             Self::ExistsVar(_) => {}
             Self::ForallVar(var) => {
                 if *var == this {
-                    *self = Self::ExistsVar(that)
+                    *self = Self::ExistsVar(that);
                 }
             }
             Self::Binary(l, _, r) => {
@@ -296,7 +296,7 @@ impl Term {
             Self::ForallVar(_) => {}
             Self::ExistsVar(var) => {
                 if *var == this {
-                    *self = Self::ExistsVar(that)
+                    *self = Self::ExistsVar(that);
                 }
             }
             Self::Binary(l, _, r) => {
@@ -306,7 +306,7 @@ impl Term {
         }
     }
 
-    pub fn succ(term: Term) -> Self {
+    pub fn succ(term: Self) -> Self {
         Self::Succ(Box::new(term))
     }
 
@@ -339,7 +339,7 @@ impl Principality {
     ///
     /// [`Principal`]: Principality::Principal
     #[must_use]
-    pub fn is_principal(&self) -> bool {
+    pub fn is_principal(self) -> bool {
         matches!(self, Self::Principal)
     }
 
@@ -347,7 +347,7 @@ impl Principality {
     ///
     /// [`NonPrincipal`]: Principality::NonPrincipal
     #[must_use]
-    pub fn is_non_principal(&self) -> bool {
+    pub fn is_non_principal(self) -> bool {
         matches!(self, Self::NonPrincipal)
     }
 }
@@ -364,7 +364,7 @@ impl Polarity {
     ///
     /// [`Positive`]: Polarity::Positive
     #[must_use]
-    pub fn is_positive(&self) -> bool {
+    pub fn is_positive(self) -> bool {
         matches!(self, Self::Positive)
     }
 
@@ -372,25 +372,25 @@ impl Polarity {
     ///
     /// [`Negative`]: Polarity::Negative
     #[must_use]
-    pub fn is_negative(&self) -> bool {
+    pub fn is_negative(self) -> bool {
         matches!(self, Self::Negative)
     }
 
-    pub fn is_non_positive(&self) -> bool {
+    pub fn is_non_positive(self) -> bool {
         !self.is_positive()
     }
 
-    pub fn is_non_negative(&self) -> bool {
+    pub fn is_non_negative(self) -> bool {
         !self.is_negative()
     }
 
-    pub fn join(&self, other: Self) -> Self {
+    pub fn join(self, other: Self) -> Self {
         match (self, other) {
-            (Polarity::Positive, _) => Polarity::Positive,
-            (Polarity::Negative, _) => Polarity::Negative,
-            (Polarity::None, Polarity::Positive) => Polarity::Positive,
-            (Polarity::None, Polarity::Negative) => Polarity::Negative,
-            (Polarity::None, Polarity::None) => Polarity::Negative,
+            (Self::Positive, _) => Self::Positive,
+            (Self::Negative, _) => Self::Negative,
+            (Self::None, Self::Positive) => Self::Positive,
+            (Self::None, Self::Negative) => Self::Negative,
+            (Self::None, Self::None) => Self::Negative,
         }
     }
 }
