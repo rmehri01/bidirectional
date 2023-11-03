@@ -165,6 +165,9 @@ impl TyCtx {
 
     /// Γ ⊢ e <== A p ⊣ ∆, under `self`, expression `expr` checks against type `ty` with output context ∆.
     fn check_expr_ty(self, expr: Expr, ty: Type, p: Principality) -> Self {
+        debug_assert!(self.clone().well_formed());
+        debug_assert!(self.ty_well_formed(&ty));
+
         match (expr, ty, p) {
             // Rec
             (Expr::Fix(x, v), a, p) => {
@@ -435,6 +438,9 @@ impl TyCtx {
         body_ty: Type,
         p: Principality,
     ) -> Self {
+        debug_assert!(self.tys_principality_well_formed(pattern_tys.clone().into(), q));
+        debug_assert!(self.ty_principality_well_formed(body_ty.clone(), p));
+
         match branches.0.pop_front() {
             // MatchEmpty
             None => self,
@@ -460,6 +466,9 @@ impl TyCtx {
         body_ty: Type,
         p: Principality,
     ) -> Self {
+        debug_assert!(self.tys_principality_well_formed(pattern_tys.clone().into(), q));
+        debug_assert!(self.ty_principality_well_formed(body_ty.clone(), p));
+
         let Branch(mut ps, e) = branch;
         match (ps.pop_front(), pattern_tys.pop_front(), q, body_ty, p) {
             // MatchBase
@@ -608,6 +617,11 @@ impl TyCtx {
         body_ty: Type,
         p: Principality,
     ) -> Self {
+        debug_assert!(
+            self.tys_principality_well_formed(pattern_tys.clone().into(), Principality::Principal)
+        );
+        debug_assert!(self.ty_principality_well_formed(body_ty.clone(), p));
+
         let Proposition(t1, t2) = prop;
 
         let mark = ForallVar::fresh("P");
@@ -635,6 +649,8 @@ impl TyCtx {
 
     /// Γ ⊢ e ==> A p ⊣ ∆, under `self`, expression `expr` synthesizes output type `A` with output context ∆.
     pub fn synth_expr_ty(self, expr: Expr) -> (Type, Principality, Self) {
+        debug_assert!(self.clone().well_formed());
+
         match expr {
             // Var
             Expr::Var(var) if self.find_expr_solution(&var).is_some() => {
@@ -644,7 +660,7 @@ impl TyCtx {
             }
             // Anno
             Expr::Annotation(e, a)
-                if self.principality_well_formed(a.clone(), Principality::Principal) =>
+                if self.ty_principality_well_formed(a.clone(), Principality::Principal) =>
             {
                 let new_a = self.apply_to_ty(a.clone());
                 let new_tcx = self.check_expr_ty(*e, new_a, Principality::Principal);
@@ -1161,14 +1177,8 @@ impl TyCtx {
         }
     }
 
-    /// Γ ⊢ A⃗ types, under `self`, `tys` are well-formed.
-    fn tys_well_formed(&self, tys: &[Type]) -> bool {
-        // TypevecWF
-        tys.iter().all(|ty| self.ty_well_formed(ty))
-    }
-
     /// Γ ⊢ A p type, under `self`, `ty` is well-formed and respects principality `p`.
-    fn principality_well_formed(&self, ty: Type, p: Principality) -> bool {
+    fn ty_principality_well_formed(&self, ty: Type, p: Principality) -> bool {
         match p {
             // PrincipalWF
             Principality::Principal => {
@@ -1180,10 +1190,10 @@ impl TyCtx {
     }
 
     /// Γ ⊢ A⃗ p types, under `self`, `tys` are well-formed with principality `p`.
-    fn principalities_well_formed(&self, tys: Vec<Type>, p: Principality) -> bool {
+    fn tys_principality_well_formed(&self, tys: Vec<Type>, p: Principality) -> bool {
         // PrincipalTypevecWF
         tys.into_iter()
-            .all(|ty| self.principality_well_formed(ty, p))
+            .all(|ty| self.ty_principality_well_formed(ty, p))
     }
 
     /// Γ ctx, algorithmic context `self` is well-formed.
@@ -1269,6 +1279,8 @@ impl TyCtx {
         mut tys: VecDeque<Type>,
         principality: Principality,
     ) -> bool {
+        debug_assert!(self.tys_principality_well_formed(tys.clone().into(), principality));
+
         match tys.pop_front() {
             // CoversEmpty
             None => branches
@@ -1371,6 +1383,10 @@ impl TyCtx {
         branches: Branches,
         tys: VecDeque<Type>,
     ) -> bool {
+        debug_assert!(
+            self.tys_principality_well_formed(tys.clone().into(), Principality::Principal)
+        );
+
         let Proposition(term1, term2) = prop;
 
         let new_term1 = self.apply_to_term(term1);
@@ -2013,7 +2029,8 @@ mod tests {
         let tcx = TyCtx::new();
         let p = Ident(Intern::new("p".to_string()));
         let xs = Ident(Intern::new("xs".to_string()));
-        let x = Ident(Intern::new("x".to_string()));
+        let y = Ident(Intern::new("y".to_string()));
+        let ys = Ident(Intern::new("ys".to_string()));
 
         let maybe_pop_front = Expr::function(
             p,
@@ -2023,18 +2040,19 @@ mod tests {
                     Expr::Var(xs),
                     Branches::from_iter([
                         Branch::from_iter([Pattern::Nil], Expr::Nil),
+                        // TODO: shadowing makes the context not well formed?
                         Branch::from_iter(
-                            [Pattern::cons(Pattern::Var(x), Pattern::Var(xs))],
+                            [Pattern::cons(Pattern::Var(y), Pattern::Var(ys))],
                             Expr::case(
-                                Expr::app(Expr::Var(p), Spine::from_iter([Expr::Var(x)])),
+                                Expr::app(Expr::Var(p), Spine::from_iter([Expr::Var(y)])),
                                 Branches::from_iter([
                                     Branch::from_iter(
                                         [Pattern::inj1(Pattern::Wildcard)],
-                                        Expr::Var(xs),
+                                        Expr::Var(ys),
                                     ),
                                     Branch::from_iter(
                                         [Pattern::inj2(Pattern::Wildcard)],
-                                        Expr::cons(Expr::Var(x), Expr::Var(xs)),
+                                        Expr::cons(Expr::Var(y), Expr::Var(ys)),
                                     ),
                                 ]),
                             ),
