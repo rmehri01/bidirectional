@@ -986,12 +986,6 @@ impl TyCtx {
             }
             (a, b) => panic!("unexpected pattern for checking that terms are equal: {a:?} {b:?}"),
         }
-        // TODO: not sure if this is just normal equality
-        // if a == b {
-        //     self
-        // } else {
-        //     panic!("terms not equal: {self:#?} {a:?} {b:?}")
-        // }
     }
 
     /// Γ ⊢ α̂ := t : κ ⊣ ∆, under `self`, instantiate `var` such that `var` = `t` with output ctx ∆.
@@ -2222,6 +2216,7 @@ mod tests {
                 ),
             ),
         );
+        // TODO: should still work even without outer annotation?
         let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
             Expr::app(function, Spine::from_iter([Expr::Var(x)])),
             res_ty.clone(),
@@ -2299,6 +2294,116 @@ mod tests {
             ),
             anno_ty.clone(),
         ));
+        assert_eq!(ty, anno_ty);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn heterogenous_vec() {
+        let t = Ident(Intern::new("T".to_string()));
+        let tcx = TyCtx::new();
+
+        let anno_ty = Type::vec(
+            Term::succ(Term::succ(Term::Zero)),
+            Type::exists(t, Sort::Monotype, Type::ExistsVar(ExistsVar(t.0))),
+        );
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
+            Expr::cons(
+                Expr::Unit,
+                Expr::cons(Expr::pair(Expr::Unit, Expr::Unit), Expr::Nil),
+            ),
+            anno_ty.clone(),
+        ));
+        assert_eq!(ty, anno_ty);
+        assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn foldr() {
+        let tcx = TyCtx::new();
+        let foldr = Ident(Intern::new("foldr".to_string()));
+        let f = Ident(Intern::new("f".to_string()));
+        let z = Ident(Intern::new("z".to_string()));
+        let xs = Ident(Intern::new("xs".to_string()));
+        let y = Ident(Intern::new("y".to_string()));
+        let ys = Ident(Intern::new("ys".to_string()));
+
+        let foldr = Expr::Fix(
+            foldr,
+            Value::function(
+                f,
+                Expr::function(
+                    z,
+                    Expr::function(
+                        xs,
+                        Expr::case(
+                            Expr::Var(xs),
+                            Branches::from_iter([
+                                Branch::from_iter([Pattern::Nil], Expr::Var(z)),
+                                Branch::from_iter(
+                                    [Pattern::cons(Pattern::Var(y), Pattern::Var(ys))],
+                                    Expr::app(
+                                        Expr::Var(f),
+                                        Spine::from_iter([
+                                            Expr::Var(y),
+                                            Expr::app(
+                                                Expr::Var(foldr),
+                                                Spine::from_iter([
+                                                    Expr::Var(f),
+                                                    Expr::Var(z),
+                                                    Expr::Var(ys),
+                                                ]),
+                                            ),
+                                        ]),
+                                    ),
+                                ),
+                            ]),
+                        ),
+                    ),
+                ),
+            ),
+        );
+
+        let n = Ident(Intern::new("n".to_string()));
+        let alpha = Ident(Intern::new("α".to_string()));
+        let beta = Ident(Intern::new("β".to_string()));
+        let anno_ty = Type::forall(
+            n,
+            Sort::Natural,
+            Type::forall(
+                alpha,
+                Sort::Monotype,
+                Type::forall(
+                    beta,
+                    Sort::Monotype,
+                    Type::binary(
+                        Type::binary(
+                            Type::ForallVar(ForallVar(alpha.0)),
+                            Connective::Function,
+                            Type::binary(
+                                Type::ForallVar(ForallVar(beta.0)),
+                                Connective::Function,
+                                Type::ForallVar(ForallVar(beta.0)),
+                            ),
+                        ),
+                        Connective::Function,
+                        Type::binary(
+                            Type::ForallVar(ForallVar(beta.0)),
+                            Connective::Function,
+                            Type::binary(
+                                Type::vec(
+                                    Term::ForallVar(ForallVar(n.0)),
+                                    Type::ForallVar(ForallVar(alpha.0)),
+                                ),
+                                Connective::Function,
+                                Type::ForallVar(ForallVar(beta.0)),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        );
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(foldr, anno_ty.clone()));
         assert_eq!(ty, anno_ty);
         assert_eq!(p, Principality::Principal);
     }
