@@ -54,20 +54,6 @@ impl Type {
         }
     }
 
-    pub fn to_term(self) -> Result<Term, String> {
-        match self {
-            Self::Forall(_, _, _)
-            | Self::Exists(_, _, _)
-            | Self::Implies(_, _)
-            | Self::With(_, _)
-            | Self::Vec(_, _) => Err(format!("Type {self:?} is not a valid monotype.")),
-            Self::Unit => Ok(Term::Unit),
-            Self::ForallVar(f) => Ok(Term::ForallVar(f)),
-            Self::ExistsVar(e) => Ok(Term::ExistsVar(e)),
-            Self::Binary(a, op, b) => Ok(Term::binary(a.to_term()?, op, b.to_term()?)),
-        }
-    }
-
     pub fn free_exists_vars(&self) -> HashSet<ExistsVar> {
         // keep track of bound variables
         fn free_vars_with_bound(
@@ -196,6 +182,22 @@ impl Type {
     }
 }
 
+impl TryFrom<Term> for Type {
+    type Error = String;
+
+    fn try_from(term: Term) -> Result<Self, Self::Error> {
+        match term {
+            Term::Zero | Term::Succ(_) => Err(format!("Term {term:?} is not a valid monotype.")),
+            Term::Unit => Ok(Self::Unit),
+            Term::ForallVar(f) => Ok(Self::ForallVar(f)),
+            Term::ExistsVar(e) => Ok(Self::ExistsVar(e)),
+            Term::Binary(a, op, b) => {
+                Ok(Self::binary(Self::try_from(*a)?, op, Self::try_from(*b)?))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sort {
     Natural,
@@ -214,16 +216,6 @@ pub enum Term {
 }
 
 impl Term {
-    pub fn into_ty(self) -> Type {
-        match self {
-            Self::Zero | Self::Succ(_) => panic!("should only be called with monotypes"),
-            Self::Unit => Type::Unit,
-            Self::ForallVar(f) => Type::ForallVar(f),
-            Self::ExistsVar(e) => Type::ExistsVar(e),
-            Self::Binary(a, op, b) => Type::binary(a.into_ty(), op, b.into_ty()),
-        }
-    }
-
     pub fn free_forall_vars(&self) -> HashSet<ForallVar> {
         match self {
             Self::Zero | Self::Unit | Self::ExistsVar(_) => HashSet::new(),
@@ -305,6 +297,26 @@ impl Term {
 
     pub fn binary(a: Self, connective: Connective, b: Self) -> Self {
         Self::Binary(Box::new(a), connective, Box::new(b))
+    }
+}
+
+impl TryFrom<Type> for Term {
+    type Error = String;
+
+    fn try_from(ty: Type) -> Result<Self, Self::Error> {
+        match ty {
+            Type::Forall(_, _, _)
+            | Type::Exists(_, _, _)
+            | Type::Implies(_, _)
+            | Type::With(_, _)
+            | Type::Vec(_, _) => Err(format!("Type {ty:?} is not a valid monotype.")),
+            Type::Unit => Ok(Self::Unit),
+            Type::ForallVar(f) => Ok(Self::ForallVar(f)),
+            Type::ExistsVar(e) => Ok(Self::ExistsVar(e)),
+            Type::Binary(a, op, b) => {
+                Ok(Self::binary(Self::try_from(*a)?, op, Self::try_from(*b)?))
+            }
+        }
     }
 }
 

@@ -74,7 +74,11 @@ impl TyCtx {
         match ty {
             Type::ForallVar(alpha) => self
                 .find_forall_solution(alpha)
-                .map(|term| self.apply_to_term(term).into_ty())
+                .map(|term| {
+                    self.apply_to_term(term)
+                        .try_into()
+                        .expect("term should be a monotype")
+                })
                 .unwrap_or(ty),
             Type::Implies(prop, ty) => {
                 Type::implies(self.apply_to_prop(prop), self.apply_to_ty(*ty))
@@ -84,7 +88,11 @@ impl TyCtx {
             Type::Vec(idx, ty) => Type::vec(self.apply_to_term(idx), self.apply_to_ty(*ty)),
             Type::ExistsVar(alpha_hat) => self
                 .find_exists_solution(alpha_hat)
-                .map(|term| self.apply_to_term(term).into_ty())
+                .map(|term| {
+                    self.apply_to_term(term)
+                        .try_into()
+                        .expect("term should be a monotype")
+                })
                 .unwrap_or(ty),
             Type::Forall(ident, sort, ty) => Type::forall(ident, sort, self.apply_to_ty(*ty)),
             Type::Exists(ident, sort, ty) => Type::exists(ident, sort, self.apply_to_ty(*ty)),
@@ -159,7 +167,7 @@ impl TyCtx {
                 // TODO: not sure if we need a separate check_value
                 Ok(self
                     .extend(entry.clone())
-                    .check_expr_ty(v.into_expr(), a, p)?
+                    .check_expr_ty(v.into(), a, p)?
                     .drop_from(&entry))
             }
             // 1I
@@ -949,14 +957,17 @@ impl TyCtx {
             // ≡InstantiateL
             // ≡InstantiateR
             (Type::ExistsVar(alpha_hat), tau) | (tau, Type::ExistsVar(alpha_hat))
-                if !tau
-                    .clone()
-                    .to_term()?
-                    .free_exists_vars()
-                    .contains(&alpha_hat)
-                    && self.is_unsolved(&TyVar::Exists(alpha_hat)) =>
+                if self.is_unsolved(&TyVar::Exists(alpha_hat)) =>
             {
-                self.instantiate(alpha_hat, tau.to_term()?, Sort::Monotype)
+                let tau = Term::try_from(tau)?;
+
+                if !tau.free_exists_vars().contains(&alpha_hat) {
+                    self.instantiate(alpha_hat, tau, Sort::Monotype)
+                } else {
+                    Err(format!(
+                        "Cannot instantiate existential var {alpha_hat:?} to term {tau:?} since it fails the occurs check."
+                    ))
+                }
             }
             (a, b) => Err(format!(
                 "Couldn't determine if type {a:?} is equivalent to type {b:?}."

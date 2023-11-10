@@ -79,6 +79,23 @@ impl Expr {
     }
 }
 
+impl From<Value> for Expr {
+    fn from(value: Value) -> Self {
+        match value {
+            Value::Var(v) => Self::Var(v),
+            Value::Unit => Self::Unit,
+            Value::Function(x, e) => Self::Function(x, e),
+            Value::Fix(x, v) => Self::Fix(x, *v),
+            Value::Annotation(v, t) => Self::annotation(Self::from(*v), t),
+            Value::Pair(v1, v2) => Self::pair(Self::from(*v1), Self::from(*v2)),
+            Value::Inj1(v) => Self::inj1(Self::from(*v)),
+            Value::Inj2(v) => Self::inj2(Self::from(*v)),
+            Value::Nil => Self::Nil,
+            Value::Cons(hd, tl) => Self::cons(Self::from(*hd), Self::from(*tl)),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Spine(pub VecDeque<Expr>);
 
@@ -104,21 +121,6 @@ pub enum Value {
 }
 
 impl Value {
-    pub fn into_expr(self) -> Expr {
-        match self {
-            Self::Var(v) => Expr::Var(v),
-            Self::Unit => Expr::Unit,
-            Self::Function(x, e) => Expr::Function(x, e),
-            Self::Fix(x, v) => Expr::Fix(x, *v),
-            Self::Annotation(v, t) => Expr::annotation(v.into_expr(), t),
-            Self::Pair(v1, v2) => Expr::pair(v1.into_expr(), v2.into_expr()),
-            Self::Inj1(v) => Expr::inj1(v.into_expr()),
-            Self::Inj2(v) => Expr::inj2(v.into_expr()),
-            Self::Nil => Expr::Nil,
-            Self::Cons(hd, tl) => Expr::cons(hd.into_expr(), tl.into_expr()),
-        }
-    }
-
     pub fn function(ident: Ident, body: Expr) -> Self {
         Self::Function(ident, Box::new(body))
     }
