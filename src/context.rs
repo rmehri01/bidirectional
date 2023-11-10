@@ -164,7 +164,6 @@ impl TyCtx {
             // Rec
             (Expr::Fix(x, v), a, p) => {
                 let entry = Entry::ExprTyping(x, a.clone(), p);
-                // TODO: not sure if we need a separate check_value
                 Ok(self
                     .extend(entry.clone())
                     .check_expr_ty(v.into(), a, p)?
@@ -183,7 +182,6 @@ impl TyCtx {
                     Entry::SolvedExists(alpha_hat, Sort::Monotype, Term::Unit),
                 ))
             }
-            // TODO: why are these v in the paper, are they always values?
             // ∀I
             (v, Type::Forall(alpha, sort, a), p) if v.is_intro_form() => {
                 let entry = Entry::Unsolved(TyVar::Forall(ForallVar(alpha.0)), sort);
@@ -1655,7 +1653,6 @@ mod tests {
                                 [Pattern::cons(Pattern::Var(y), Pattern::Var(ys))],
                                 Expr::cons(Expr::Var(y), Expr::Var(ys)),
                             ),
-                            // TODO: wildcard or var here in pattern fails?
                             Branch::from_iter([Pattern::Nil], Expr::Nil),
                         ]),
                     ),
@@ -1707,7 +1704,6 @@ mod tests {
                             Branches::from_iter([
                                 Branch::from_iter([Pattern::Nil], Expr::Nil),
                                 Branch::from_iter(
-                                    // TODO: add app to id
                                     [Pattern::cons(Pattern::Var(y), Pattern::Var(ys))],
                                     Expr::cons(
                                         Expr::Var(y),
@@ -2069,7 +2065,6 @@ mod tests {
                     Expr::Var(xs),
                     Branches::from_iter([
                         Branch::from_iter([Pattern::Nil], Expr::Nil),
-                        // TODO: shadowing makes the context not well formed?
                         Branch::from_iter(
                             [Pattern::cons(Pattern::Var(y), Pattern::Var(ys))],
                             Expr::case(
@@ -2276,7 +2271,6 @@ mod tests {
                 ),
             ),
         );
-        // TODO: should still work even without outer annotation?
         let (ty, p, _) = tcx
             .synth_expr_ty(Expr::annotation(
                 Expr::app(function, Spine::from_iter([Expr::Var(x)])),
@@ -2508,5 +2502,271 @@ mod tests {
             .unwrap();
         assert_eq!(ty, res_ty);
         assert_eq!(p, Principality::Principal);
+    }
+
+    #[test]
+    fn basic_err() {
+        let tcx = TyCtx::new();
+        assert!(tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::Nil,
+                Type::vec(Term::succ(Term::Zero), Type::Unit),
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn missing_nil_pat() {
+        let tcx = TyCtx::new();
+        let xs = Ident(Intern::new("xs".to_string()));
+        let y = Ident(Intern::new("y".to_string()));
+        let ys = Ident(Intern::new("ys".to_string()));
+
+        let n = Ident(Intern::new("n".to_string()));
+        let alpha = Ident(Intern::new("α".to_string()));
+        let fn_ty = Type::forall(
+            n,
+            Sort::Natural,
+            Type::forall(
+                alpha,
+                Sort::Monotype,
+                Type::binary(
+                    Type::vec(
+                        Term::ForallVar(ForallVar(n.0)),
+                        Type::ForallVar(ForallVar(alpha.0)),
+                    ),
+                    Connective::Function,
+                    Type::vec(
+                        Term::ForallVar(ForallVar(n.0)),
+                        Type::ForallVar(ForallVar(alpha.0)),
+                    ),
+                ),
+            ),
+        );
+
+        assert!(tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::function(
+                    xs,
+                    Expr::case(
+                        Expr::Var(xs),
+                        Branches::from_iter([Branch::from_iter(
+                            [Pattern::cons(Pattern::Var(y), Pattern::Var(ys))],
+                            Expr::cons(Expr::Var(y), Expr::Var(ys)),
+                        ),]),
+                    ),
+                ),
+                fn_ty.clone(),
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn incorrect_vec_len() {
+        let tcx = TyCtx::new();
+        let map = Ident(Intern::new("map".to_string()));
+        let f = Ident(Intern::new("f".to_string()));
+        let xs = Ident(Intern::new("xs".to_string()));
+        let y = Ident(Intern::new("y".to_string()));
+        let ys = Ident(Intern::new("ys".to_string()));
+
+        let rec_map = Expr::Fix(
+            map,
+            Value::function(
+                f,
+                Expr::function(
+                    xs,
+                    Expr::case(
+                        Expr::Var(xs),
+                        Branches::from_iter([
+                            Branch::from_iter([Pattern::Nil], Expr::Nil),
+                            Branch::from_iter(
+                                [Pattern::cons(Pattern::Var(y), Pattern::Var(ys))],
+                                // cons the mapped elem twice
+                                Expr::cons(
+                                    Expr::app(Expr::Var(f), Spine::from_iter([Expr::Var(y)])),
+                                    Expr::cons(
+                                        Expr::app(Expr::Var(f), Spine::from_iter([Expr::Var(y)])),
+                                        Expr::app(
+                                            Expr::Var(map),
+                                            Spine::from_iter([Expr::Var(f), Expr::Var(ys)]),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ]),
+                    ),
+                ),
+            ),
+        );
+
+        let n = Ident(Intern::new("n".to_string()));
+        let alpha = Ident(Intern::new("α".to_string()));
+        let beta = Ident(Intern::new("β".to_string()));
+        let anno_ty = Type::forall(
+            n,
+            Sort::Natural,
+            Type::forall(
+                alpha,
+                Sort::Monotype,
+                Type::forall(
+                    beta,
+                    Sort::Monotype,
+                    Type::binary(
+                        Type::binary(
+                            Type::ForallVar(ForallVar(alpha.0)),
+                            Connective::Function,
+                            Type::ForallVar(ForallVar(beta.0)),
+                        ),
+                        Connective::Function,
+                        Type::binary(
+                            Type::vec(
+                                Term::ForallVar(ForallVar(n.0)),
+                                Type::ForallVar(ForallVar(alpha.0)),
+                            ),
+                            Connective::Function,
+                            Type::vec(
+                                Term::ForallVar(ForallVar(n.0)),
+                                Type::ForallVar(ForallVar(beta.0)),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        );
+        assert!(tcx
+            .synth_expr_ty(Expr::annotation(rec_map, anno_ty.clone()))
+            .is_err());
+    }
+
+    #[test]
+    fn right_len_wrong_ty() {
+        let tcx = TyCtx::new();
+        let zip = Ident(Intern::new("zip".to_string()));
+        let p = Ident(Intern::new("p".to_string()));
+        let x = Ident(Intern::new("x".to_string()));
+        let xs = Ident(Intern::new("xs".to_string()));
+        let y = Ident(Intern::new("y".to_string()));
+        let ys = Ident(Intern::new("ys".to_string()));
+
+        let rec_zip = Expr::Fix(
+            zip,
+            Value::function(
+                p,
+                Expr::case(
+                    Expr::Var(p),
+                    Branches::from_iter([
+                        Branch::from_iter([Pattern::pair(Pattern::Nil, Pattern::Nil)], Expr::Nil),
+                        Branch::from_iter(
+                            [Pattern::pair(
+                                Pattern::cons(Pattern::Var(x), Pattern::Var(xs)),
+                                Pattern::cons(Pattern::Var(y), Pattern::Var(ys)),
+                            )],
+                            Expr::cons(
+                                Expr::pair(Expr::Var(y), Expr::Var(x)),
+                                Expr::app(
+                                    Expr::Var(zip),
+                                    Spine::from_iter([Expr::pair(Expr::Var(xs), Expr::Var(ys))]),
+                                ),
+                            ),
+                        ),
+                    ]),
+                ),
+            ),
+        );
+
+        let n = Ident(Intern::new("n".to_string()));
+        let alpha = Ident(Intern::new("α".to_string()));
+        let beta = Ident(Intern::new("β".to_string()));
+        let anno_ty = Type::forall(
+            n,
+            Sort::Natural,
+            Type::forall(
+                alpha,
+                Sort::Monotype,
+                Type::forall(
+                    beta,
+                    Sort::Monotype,
+                    Type::binary(
+                        Type::binary(
+                            Type::vec(
+                                Term::ForallVar(ForallVar(n.0)),
+                                Type::ForallVar(ForallVar(alpha.0)),
+                            ),
+                            Connective::Product,
+                            Type::vec(
+                                Term::ForallVar(ForallVar(n.0)),
+                                Type::ForallVar(ForallVar(beta.0)),
+                            ),
+                        ),
+                        Connective::Function,
+                        Type::vec(
+                            Term::ForallVar(ForallVar(n.0)),
+                            Type::binary(
+                                Type::ForallVar(ForallVar(alpha.0)),
+                                Connective::Product,
+                                Type::ForallVar(ForallVar(beta.0)),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        );
+        assert!(tcx
+            .synth_expr_ty(Expr::annotation(rec_zip, anno_ty.clone()))
+            .is_err());
+    }
+
+    #[test]
+    fn incompatable_branches() {
+        let tcx = TyCtx::new();
+        let k = Ident(Intern::new("k".to_string()));
+        let anno_ty = Type::exists(
+            k,
+            Sort::Natural,
+            Type::vec(Term::ExistsVar(ExistsVar(k.0)), Type::Unit),
+        );
+
+        assert!(tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::case(
+                    Expr::Unit,
+                    Branches::from_iter([
+                        Branch::from_iter([Pattern::Wildcard], Expr::Unit),
+                        Branch::from_iter([Pattern::Unit], Expr::cons(Expr::Unit, Expr::Nil)),
+                    ]),
+                ),
+                anno_ty.clone(),
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn apply_to_non_monotype() {
+        let id = Ident(Intern::new("id".to_string()));
+        let alpha = Ident(Intern::new("α".to_string()));
+        let tcx = TyCtx::new().extend(Entry::ExprTyping(
+            id,
+            Type::forall(
+                alpha,
+                Sort::Monotype,
+                Type::binary(
+                    Type::ForallVar(ForallVar(alpha.0)),
+                    Connective::Function,
+                    Type::ForallVar(ForallVar(alpha.0)),
+                ),
+            ),
+            Principality::Principal,
+        ));
+
+        assert!(tcx
+            .synth_expr_ty(Expr::app(
+                Expr::Var(id),
+                Spine::from_iter([Expr::annotation(
+                    Expr::Nil,
+                    Type::vec(Term::Zero, Type::Unit),
+                )]),
+            ))
+            .is_err());
     }
 }

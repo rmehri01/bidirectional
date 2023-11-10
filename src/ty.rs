@@ -92,7 +92,8 @@ impl Type {
         free_vars_with_bound(self, HashSet::new())
     }
 
-    // TODO: capture avoiding?
+    // NOTE: This is not capture avoiding, just normal substitution. We could probably
+    //       get around this with De Bruijn indices or a better way of doing alpha-equivalence.
     /// [α̂/α]A, substitute all instances of `this` for `that` in `self`.
     pub fn substitute_forall(&mut self, this: ForallVar, that: ExistsVar) {
         match self {
@@ -402,7 +403,6 @@ impl Polarity {
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
-// TODO: combine different var types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ForallVar(pub Intern<String>);
 

@@ -105,7 +105,6 @@ impl Spine {
     }
 }
 
-// TODO: combine with expr?
 #[derive(Debug, Clone)]
 pub enum Value {
     Var(Ident),
