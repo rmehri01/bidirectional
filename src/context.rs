@@ -77,29 +77,17 @@ impl TyCtx {
                 .map(|term| self.apply_to_term(term).into_ty())
                 .unwrap_or(ty),
             Type::Implies(prop, ty) => {
-                Type::Implies(self.apply_to_prop(prop), Box::new(self.apply_to_ty(*ty)))
+                Type::implies(self.apply_to_prop(prop), self.apply_to_ty(*ty))
             }
-            Type::With(ty, prop) => {
-                Type::With(Box::new(self.apply_to_ty(*ty)), self.apply_to_prop(prop))
-            }
-            Type::Binary(a, op, b) => Type::Binary(
-                Box::new(self.apply_to_ty(*a)),
-                op,
-                Box::new(self.apply_to_ty(*b)),
-            ),
-            Type::Vec(idx, ty) => {
-                Type::Vec(self.apply_to_term(idx), Box::new(self.apply_to_ty(*ty)))
-            }
+            Type::With(ty, prop) => Type::with(self.apply_to_ty(*ty), self.apply_to_prop(prop)),
+            Type::Binary(a, op, b) => Type::binary(self.apply_to_ty(*a), op, self.apply_to_ty(*b)),
+            Type::Vec(idx, ty) => Type::vec(self.apply_to_term(idx), self.apply_to_ty(*ty)),
             Type::ExistsVar(alpha_hat) => self
                 .find_exists_solution(alpha_hat)
                 .map(|term| self.apply_to_term(term).into_ty())
                 .unwrap_or(ty),
-            Type::Forall(ident, sort, ty) => {
-                Type::Forall(ident, sort, Box::new(self.apply_to_ty(*ty)))
-            }
-            Type::Exists(ident, sort, ty) => {
-                Type::Exists(ident, sort, Box::new(self.apply_to_ty(*ty)))
-            }
+            Type::Forall(ident, sort, ty) => Type::forall(ident, sort, self.apply_to_ty(*ty)),
+            Type::Exists(ident, sort, ty) => Type::exists(ident, sort, self.apply_to_ty(*ty)),
             Type::Unit => Type::Unit,
         }
     }
@@ -107,9 +95,8 @@ impl TyCtx {
     /// Substitute for solved existential variables in `term`.
     fn apply_to_term(&self, term: Term) -> Term {
         match term {
-            // TODO: should this be defined on zero and succ?
             Term::Zero | Term::Unit => term,
-            Term::Succ(t) => Term::Succ(Box::new(self.apply_to_term(*t))),
+            Term::Succ(t) => Term::succ(self.apply_to_term(*t)),
             Term::ForallVar(alpha) => self
                 .find_forall_solution(alpha)
                 .map(|term| self.apply_to_term(term))
@@ -118,11 +105,9 @@ impl TyCtx {
                 .find_exists_solution(alpha_hat)
                 .map(|term| self.apply_to_term(term))
                 .unwrap_or(term),
-            Term::Binary(a, op, b) => Term::Binary(
-                Box::new(self.apply_to_term(*a)),
-                op,
-                Box::new(self.apply_to_term(*b)),
-            ),
+            Term::Binary(a, op, b) => {
+                Term::binary(self.apply_to_term(*a), op, self.apply_to_term(*b))
+            }
         }
     }
 
@@ -154,7 +139,6 @@ impl TyCtx {
         })
     }
 
-    // TODO: not sure how necessary this is, seems like overlaps with find_solution?
     fn find_unsolved(&self, var: &TyVar) -> Option<Sort> {
         self.0.iter().rev().find_map(|entry| match entry {
             Entry::Unsolved(found_var, sort) if found_var == var => Some(*sort),
@@ -162,42 +146,43 @@ impl TyCtx {
         })
     }
 
-    // TODO: not sure how necessary this is, seems like overlaps with find_solution?
     fn is_unsolved(&self, var: &TyVar) -> bool {
         self.find_unsolved(var).is_some()
     }
 
     /// Γ ⊢ e <== A p ⊣ ∆, under `self`, expression `expr` checks against type `ty` with output context ∆.
-    fn check_expr_ty(self, expr: Expr, ty: Type, p: Principality) -> Self {
+    fn check_expr_ty(self, expr: Expr, ty: Type, p: Principality) -> Result<Self, String> {
         match (expr, ty, p) {
             // Rec
             (Expr::Fix(x, v), a, p) => {
                 let entry = Entry::ExprTyping(x, a.clone(), p);
                 // TODO: not sure if we need a separate check_value
-                self.extend(entry.clone())
-                    .check_expr_ty(v.into_expr(), a, p)
-                    .drop_from(&entry)
+                Ok(self
+                    .extend(entry.clone())
+                    .check_expr_ty(v.into_expr(), a, p)?
+                    .drop_from(&entry))
             }
             // 1I
-            (Expr::Unit, Type::Unit, _) => self,
+            (Expr::Unit, Type::Unit, _) => Ok(self),
             // 1Iα̂
             (Expr::Unit, Type::ExistsVar(alpha_hat), Principality::NonPrincipal)
                 if self
                     .0
                     .contains(&Entry::Unsolved(TyVar::Exists(alpha_hat), Sort::Monotype)) =>
             {
-                self.replace(
+                Ok(self.replace(
                     &Entry::Unsolved(TyVar::Exists(alpha_hat), Sort::Monotype),
                     Entry::SolvedExists(alpha_hat, Sort::Monotype, Term::Unit),
-                )
+                ))
             }
             // TODO: why are these v in the paper, are they always values?
             // ∀I
             (v, Type::Forall(alpha, sort, a), p) if v.is_intro_form() => {
                 let entry = Entry::Unsolved(TyVar::Forall(ForallVar(alpha.0)), sort);
-                self.extend(entry.clone())
-                    .check_expr_ty(v, *a, p)
-                    .drop_from(&entry)
+                Ok(self
+                    .extend(entry.clone())
+                    .check_expr_ty(v, *a, p)?
+                    .drop_from(&entry))
             }
             // ∃I
             (e, Type::Exists(alpha, sort, mut a), _) if e.is_intro_form() => {
@@ -210,23 +195,23 @@ impl TyCtx {
             (v, Type::Implies(prop, a), Principality::Principal) if v.is_intro_form() => {
                 let mark = ForallVar::fresh("P");
                 let marker = Entry::Marker(TyVar::Forall(mark));
-                let maybe_tcx = self.extend(marker.clone()).assume_prop(prop);
+                let maybe_tcx = self.extend(marker.clone()).assume_prop(prop)?;
 
                 match maybe_tcx {
                     // ⊃I
                     MaybeTcx::Valid(new_tcx) => {
                         let new_a = new_tcx.apply_to_ty(*a);
-                        new_tcx
-                            .check_expr_ty(v, new_a, Principality::Principal)
-                            .drop_from(&marker)
+                        Ok(new_tcx
+                            .check_expr_ty(v, new_a, Principality::Principal)?
+                            .drop_from(&marker))
                     }
                     // ⊃I⊥
-                    MaybeTcx::Bottom => self,
+                    MaybeTcx::Bottom => Ok(self),
                 }
             }
             // ∧I
             (e, Type::With(a, prop), p) if !e.is_case() => {
-                let new_tcx = self.check_prop(prop);
+                let new_tcx = self.check_prop(prop)?;
 
                 let new_a = new_tcx.apply_to_ty(*a);
                 new_tcx.check_expr_ty(e, new_a, p)
@@ -234,9 +219,10 @@ impl TyCtx {
             // ->I
             (Expr::Function(x, e), Type::Binary(a, Connective::Function, b), p) => {
                 let entry = Entry::ExprTyping(x, *a, p);
-                self.extend(entry.clone())
-                    .check_expr_ty(*e, *b, p)
-                    .drop_from(&entry)
+                Ok(self
+                    .extend(entry.clone())
+                    .check_expr_ty(*e, *b, p)?
+                    .drop_from(&entry))
             }
             // ->Iα̂
             (Expr::Function(x, e), Type::ExistsVar(alpha_hat), Principality::NonPrincipal)
@@ -258,38 +244,47 @@ impl TyCtx {
                             Entry::SolvedExists(
                                 alpha_hat,
                                 Sort::Monotype,
-                                Term::Binary(
-                                    Box::new(Term::ExistsVar(alpha_hat1)),
+                                Term::binary(
+                                    Term::ExistsVar(alpha_hat1),
                                     Connective::Function,
-                                    Box::new(Term::ExistsVar(alpha_hat2)),
+                                    Term::ExistsVar(alpha_hat2),
                                 ),
                             ),
                         ],
                     )
                     .extend(x_entry.clone());
 
-                new_tcx
-                    .check_expr_ty(*e, Type::ExistsVar(alpha_hat2), Principality::NonPrincipal)
-                    .drop_from(&x_entry)
+                Ok(new_tcx
+                    .check_expr_ty(*e, Type::ExistsVar(alpha_hat2), Principality::NonPrincipal)?
+                    .drop_from(&x_entry))
             }
             // Case
             (Expr::Case(e, branches), c, p) => {
-                let (a, q, new_tcx) = self.synth_expr_ty(*e);
+                let (a, q, new_tcx) = self.synth_expr_ty(*e)?;
 
                 let new_a = new_tcx.apply_to_ty(a.clone());
                 let new_c = new_tcx.apply_to_ty(c);
-                let new_tcx =
-                    new_tcx.check_branches(branches.clone(), VecDeque::from([new_a]), q, new_c, p);
+                let new_tcx = new_tcx.check_branches(
+                    branches.clone(),
+                    VecDeque::from([new_a]),
+                    q,
+                    new_c,
+                    p,
+                )?;
 
                 let new_a = new_tcx.apply_to_ty(a);
-                if !new_tcx
-                    .clone()
-                    .branches_cover(branches, VecDeque::from([new_a]), q)
-                {
-                    panic!("branches do not cover all cases")
-                }
 
-                new_tcx
+                if new_tcx.clone().branches_cover(
+                    branches.clone(),
+                    VecDeque::from([new_a.clone()]),
+                    q,
+                )? {
+                    Ok(new_tcx)
+                } else {
+                    Err(format!(
+                        "Non-exhaustive patterns:\nThe branches {branches:?} do not fully cover type {new_a:?}."
+                    ))
+                }
             }
             // +Iₖ
             (Expr::Inj1(e), Type::Binary(ty, Connective::Sum, _), p)
@@ -313,10 +308,10 @@ impl TyCtx {
                         Entry::SolvedExists(
                             alpha_hat,
                             Sort::Monotype,
-                            Term::Binary(
-                                Box::new(Term::ExistsVar(alpha_hat1)),
+                            Term::binary(
+                                Term::ExistsVar(alpha_hat1),
                                 Connective::Sum,
-                                Box::new(Term::ExistsVar(alpha_hat2)),
+                                Term::ExistsVar(alpha_hat2),
                             ),
                         ),
                     ],
@@ -340,10 +335,10 @@ impl TyCtx {
                         Entry::SolvedExists(
                             alpha_hat,
                             Sort::Monotype,
-                            Term::Binary(
-                                Box::new(Term::ExistsVar(alpha_hat1)),
+                            Term::binary(
+                                Term::ExistsVar(alpha_hat1),
                                 Connective::Sum,
-                                Box::new(Term::ExistsVar(alpha_hat2)),
+                                Term::ExistsVar(alpha_hat2),
                             ),
                         ),
                     ],
@@ -353,7 +348,7 @@ impl TyCtx {
             }
             // ×I
             (Expr::Pair(e1, e2), Type::Binary(a1, Connective::Product, a2), p) => {
-                let new_tcx = self.check_expr_ty(*e1, *a1, p);
+                let new_tcx = self.check_expr_ty(*e1, *a1, p)?;
 
                 let new_a2 = new_tcx.apply_to_ty(*a2);
                 new_tcx.check_expr_ty(*e2, new_a2, p)
@@ -375,10 +370,10 @@ impl TyCtx {
                         Entry::SolvedExists(
                             alpha_hat,
                             Sort::Monotype,
-                            Term::Binary(
-                                Box::new(Term::ExistsVar(alpha_hat1)),
+                            Term::binary(
+                                Term::ExistsVar(alpha_hat1),
                                 Connective::Product,
-                                Box::new(Term::ExistsVar(alpha_hat2)),
+                                Term::ExistsVar(alpha_hat2),
                             ),
                         ),
                     ],
@@ -388,7 +383,7 @@ impl TyCtx {
                     *e1,
                     Type::ExistsVar(alpha_hat1),
                     Principality::NonPrincipal,
-                );
+                )?;
 
                 let new_alpha_hat_2 = new_tcx.apply_to_ty(Type::ExistsVar(alpha_hat2));
                 new_tcx.check_expr_ty(*e2, new_alpha_hat_2, Principality::NonPrincipal)
@@ -405,23 +400,19 @@ impl TyCtx {
                         marker.clone(),
                         Entry::Unsolved(TyVar::Exists(alpha_hat), Sort::Natural),
                     ])
-                    .check_prop(Proposition(
-                        t,
-                        Term::Succ(Box::new(Term::ExistsVar(alpha_hat))),
-                    ));
+                    .check_prop(Proposition(t, Term::succ(Term::ExistsVar(alpha_hat))))?;
 
                 let new_a = new_tcx.apply_to_ty(*a.clone());
-                let new_tcx = new_tcx.check_expr_ty(*e1, new_a, p);
+                let new_tcx = new_tcx.check_expr_ty(*e1, new_a, p)?;
 
                 let new_ty = new_tcx.apply_to_ty(Type::Vec(Term::ExistsVar(alpha_hat), a));
-                new_tcx
-                    .check_expr_ty(*e2, new_ty, Principality::NonPrincipal)
-                    .drop_from(&marker)
+                Ok(new_tcx
+                    .check_expr_ty(*e2, new_ty, Principality::NonPrincipal)?
+                    .drop_from(&marker))
             }
-            // TODO: do other cases need to fall through into this?
             // Sub
             (e, b, _) => {
-                let (a, _, new_tcx) = self.synth_expr_ty(e);
+                let (a, _, new_tcx) = self.synth_expr_ty(e)?;
 
                 let polarity = b.polarity().join(a.polarity());
                 new_tcx.check_subtype(a, b, polarity)
@@ -438,13 +429,14 @@ impl TyCtx {
         q: Principality,
         body_ty: Type,
         p: Principality,
-    ) -> Self {
+    ) -> Result<Self, String> {
         match branches.0.pop_front() {
             // MatchEmpty
-            None => self,
+            None => Ok(self),
             // MatchSeq
             Some(branch) => {
-                let new_tcx = self.check_branch(branch, pattern_tys.clone(), q, body_ty.clone(), p);
+                let new_tcx =
+                    self.check_branch(branch, pattern_tys.clone(), q, body_ty.clone(), p)?;
                 let new_tys = pattern_tys
                     .into_iter()
                     .map(|ty| new_tcx.apply_to_ty(ty))
@@ -463,7 +455,7 @@ impl TyCtx {
         q: Principality,
         body_ty: Type,
         p: Principality,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let Branch(mut ps, e) = branch;
         match (ps.pop_front(), pattern_tys.pop_front(), q, body_ty, p) {
             // MatchBase
@@ -478,9 +470,10 @@ impl TyCtx {
                 pattern_tys.push_front(*a);
 
                 let entry = Entry::Unsolved(TyVar::Exists(ExistsVar(alpha.0)), sort);
-                self.extend(entry.clone())
-                    .check_branch(Branch(ps, e), pattern_tys, q, body_ty, p)
-                    .drop_from(&entry)
+                Ok(self
+                    .extend(entry.clone())
+                    .check_branch(Branch(ps, e), pattern_tys, q, body_ty, p)?
+                    .drop_from(&entry))
             }
             (Some(pat), Some(Type::With(a, prop)), q, body_ty, p) => {
                 ps.push_front(pat);
@@ -537,9 +530,10 @@ impl TyCtx {
             // MatchNeg
             (Some(Pattern::Var(z)), Some(a), q, body_ty, p) if !a.is_quantifier() => {
                 let entry = Entry::ExprTyping(z, a, Principality::Principal);
-                self.extend(entry.clone())
-                    .check_branch(Branch(ps, e), pattern_tys, q, body_ty, p)
-                    .drop_from(&entry)
+                Ok(self
+                    .extend(entry.clone())
+                    .check_branch(Branch(ps, e), pattern_tys, q, body_ty, p)?
+                    .drop_from(&entry))
             }
             // MatchWild
             (Some(Pattern::Wildcard), Some(a), q, body_ty, p) if !a.is_quantifier() => {
@@ -575,18 +569,18 @@ impl TyCtx {
 
                 match q {
                     // MatchCons
-                    Principality::Principal => self
+                    Principality::Principal => Ok(self
                         .extend(entry.clone())
                         .check_branch_assuming(
-                            Proposition(t, Term::Succ(Box::new(Term::ForallVar(alpha)))),
+                            Proposition(t, Term::succ(Term::ForallVar(alpha))),
                             Branch(ps, e),
                             pattern_tys,
                             body_ty,
                             p,
-                        )
-                        .drop_from(&entry),
+                        )?
+                        .drop_from(&entry)),
                     // MatchCons!̸
-                    Principality::NonPrincipal => self
+                    Principality::NonPrincipal => Ok(self
                         .extend(entry.clone())
                         .check_branch(
                             Branch(ps, e),
@@ -594,11 +588,14 @@ impl TyCtx {
                             Principality::NonPrincipal,
                             body_ty,
                             p,
-                        )
-                        .drop_from(&entry),
+                        )?
+                        .drop_from(&entry)),
                 }
             }
-            (hd_pats, hd_tys, q, body_ty, p) => panic!("unexpected pattern when checking branch: {hd_pats:?} {hd_tys:?} {q:?} {body_ty:?} {p:?}"),
+            (Some(pat), Some(ty), q, _, _) => Err(format!(
+                "Mismatched types:\nExpected pat {pat:?} to match type {ty:?} with principality {q:?}."
+            )),
+            _ => panic!("patterns should be the same length as the pattern types"),
         }
     }
 
@@ -611,67 +608,71 @@ impl TyCtx {
         pattern_tys: VecDeque<Type>,
         body_ty: Type,
         p: Principality,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let Proposition(t1, t2) = prop;
 
         let mark = ForallVar::fresh("P");
         let marker = Entry::Marker(TyVar::Forall(mark));
 
-        // TODO: what should this sort be
-        let maybe_tcx = self.extend(marker.clone()).unify(t1, t2, Sort::Natural);
+        let maybe_tcx = self.extend(marker.clone()).unify(t1, t2, Sort::Natural)?;
         match maybe_tcx {
             // Match⊥
-            MaybeTcx::Bottom => self,
+            MaybeTcx::Bottom => Ok(self),
             // MatchUnify
             MaybeTcx::Valid(new_tcx) => {
-                // TODO: should we sub here? paper doesn't say so but I think it should?
+                // paper doesn't say to substitute here but some test cases fail without it
                 let new_tys = pattern_tys
                     .into_iter()
                     .map(|ty| new_tcx.apply_to_ty(ty))
                     .collect();
                 let new_body_ty = new_tcx.apply_to_ty(body_ty);
-                new_tcx
-                    .check_branch(branch, new_tys, Principality::Principal, new_body_ty, p)
-                    .drop_from(&marker)
+                Ok(new_tcx
+                    .check_branch(branch, new_tys, Principality::Principal, new_body_ty, p)?
+                    .drop_from(&marker))
             }
         }
     }
 
     /// Γ ⊢ e ==> A p ⊣ ∆, under `self`, expression `expr` synthesizes output type `A` with output context ∆.
-    pub fn synth_expr_ty(self, expr: Expr) -> (Type, Principality, Self) {
+    pub fn synth_expr_ty(self, expr: Expr) -> Result<(Type, Principality, Self), String> {
         match expr {
             // Var
             Expr::Var(var) if self.find_expr_solution(var).is_some() => {
                 let (a, p) = self.find_expr_solution(var).unwrap();
-                // TODO: not sure if needs sub or not, seems to overwrite in recursive case, maybe need to rename quantifier vars or something?
-                (a, p, self)
+                // paper says to substitute into `a` but then the recursive tests fail, might need to make an alpha-equivalent copy of `a`
+                Ok((a, p, self))
             }
             // Anno
             Expr::Annotation(e, a)
                 if self.ty_principality_well_formed(a.clone(), Principality::Principal) =>
             {
                 let new_a = self.apply_to_ty(a.clone());
-                let new_tcx = self.check_expr_ty(*e, new_a, Principality::Principal);
+                let new_tcx = self.check_expr_ty(*e, new_a, Principality::Principal)?;
 
                 let new_a = new_tcx.apply_to_ty(a);
-                (new_a, Principality::Principal, new_tcx)
+                Ok((new_a, Principality::Principal, new_tcx))
             }
             // ->E
             Expr::App(e, s) => {
-                let (a, p, new_tcx) = self.synth_expr_ty(*e);
+                let (a, p, new_tcx) = self.synth_expr_ty(*e)?;
                 new_tcx.apply_spine_recovering(s, a, p)
             }
             // Add straightforward rules, such as for unit
-            Expr::Unit => (Type::Unit, Principality::Principal, self),
-            _ => panic!("unexpected pattern in synth: {expr:?}"),
+            Expr::Unit => Ok((Type::Unit, Principality::Principal, self)),
+            _ => Err(format!("Unable to synthesize a type for expr {expr:?}.")),
         }
     }
 
     /// Γ ⊢ s : A p >> C q ⊣ ∆, under `self`, passing spine `s` to a function of type `ty` synthesizes type `C`.
-    fn apply_spine(self, mut s: Spine, ty: Type, p: Principality) -> (Type, Principality, Self) {
+    fn apply_spine(
+        self,
+        mut s: Spine,
+        ty: Type,
+        p: Principality,
+    ) -> Result<(Type, Principality, Self), String> {
         match (s.0.pop_front(), ty) {
             // EmptySpine
-            (None, ty) => (ty, p, self),
+            (None, ty) => Ok((ty, p, self)),
             // ∀Spine
             (Some(e), Type::Forall(alpha, sort, mut a)) => {
                 s.0.push_front(e);
@@ -683,7 +684,7 @@ impl TyCtx {
             }
             // ⊃Spine
             (Some(e), Type::Implies(prop, a)) => {
-                let new_tcx = self.check_prop(prop);
+                let new_tcx = self.check_prop(prop)?;
 
                 s.0.push_front(e);
                 let new_a = new_tcx.apply_to_ty(*a);
@@ -691,7 +692,7 @@ impl TyCtx {
             }
             // ->Spine
             (Some(e), Type::Binary(a, Connective::Function, b)) => {
-                let new_tcx = self.check_expr_ty(e, *a, p);
+                let new_tcx = self.check_expr_ty(e, *a, p)?;
 
                 let new_b = new_tcx.apply_to_ty(*b);
                 new_tcx.apply_spine(s, new_b, p)
@@ -713,10 +714,10 @@ impl TyCtx {
                         Entry::SolvedExists(
                             alpha_hat,
                             Sort::Monotype,
-                            Term::Binary(
-                                Box::new(Term::ExistsVar(alpha_hat1)),
+                            Term::binary(
+                                Term::ExistsVar(alpha_hat1),
                                 Connective::Function,
-                                Box::new(Term::ExistsVar(alpha_hat2)),
+                                Term::ExistsVar(alpha_hat2),
                             ),
                         ),
                     ],
@@ -725,15 +726,17 @@ impl TyCtx {
                 s.0.push_front(e);
                 new_tcx.apply_spine(
                     s,
-                    Type::Binary(
-                        Box::new(Type::ExistsVar(alpha_hat1)),
+                    Type::binary(
+                        Type::ExistsVar(alpha_hat1),
                         Connective::Function,
-                        Box::new(Type::ExistsVar(alpha_hat2)),
+                        Type::ExistsVar(alpha_hat2),
                     ),
                     Principality::NonPrincipal,
                 )
             }
-            _ => panic!("unexpected pattern when applying spine"),
+            (Some(e), ty) => Err(format!(
+                "Couldn't apply function of type {ty:?} to argument {e:?}."
+            )),
         }
     }
 
@@ -744,21 +747,21 @@ impl TyCtx {
         s: Spine,
         ty: Type,
         p: Principality,
-    ) -> (Type, Principality, Self) {
-        let (c, q, new_tcx) = self.apply_spine(s, ty, p);
+    ) -> Result<(Type, Principality, Self), String> {
+        let (c, q, new_tcx) = self.apply_spine(s, ty, p)?;
 
         if p.is_principal() && q.is_non_principal() && c.free_exists_vars().is_empty() {
             // SpineRecover
-            (c, Principality::Principal, new_tcx)
+            Ok((c, Principality::Principal, new_tcx))
         } else {
             // SpinePass
-            (c, q, new_tcx)
+            Ok((c, q, new_tcx))
         }
     }
 
     /// Γ ⊢ A <:ᴾ B ⊣ ∆, under `self`, check if type `a` is a subtype of `b` with output ctx ∆,
     /// decomposing head connectives of polarity `p`.
-    fn check_subtype(self, a: Type, b: Type, p: Polarity) -> Self {
+    fn check_subtype(self, a: Type, b: Type, p: Polarity) -> Result<Self, String> {
         match (a, b, p) {
             // <:∀L
             (Type::Forall(alpha, sort, mut a), b, Polarity::Negative) if !b.is_forall() => {
@@ -769,25 +772,27 @@ impl TyCtx {
                     Entry::Unsolved(TyVar::Exists(alpha_hat), sort),
                 ]);
                 a.substitute_forall(ForallVar(alpha.0), alpha_hat);
-                new_tcx
-                    .check_subtype(*a, b, Polarity::Negative)
-                    .drop_from(&marker)
+                Ok(new_tcx
+                    .check_subtype(*a, b, Polarity::Negative)?
+                    .drop_from(&marker))
             }
             // <:∀R
             (a, Type::Forall(beta, sort, b), Polarity::Negative) => {
                 let beta = ForallVar(beta.0);
                 let beta_entry = Entry::Unsolved(TyVar::Forall(beta), sort);
-                self.extend(beta_entry.clone())
-                    .check_subtype(a, *b, Polarity::Negative)
-                    .drop_from(&beta_entry)
+                Ok(self
+                    .extend(beta_entry.clone())
+                    .check_subtype(a, *b, Polarity::Negative)?
+                    .drop_from(&beta_entry))
             }
             // <:∃L
             (Type::Exists(alpha, sort, a), b, Polarity::Positive) => {
                 let alpha = ExistsVar(alpha.0);
                 let alpha_entry = Entry::Unsolved(TyVar::Exists(alpha), sort);
-                self.extend(alpha_entry.clone())
-                    .check_subtype(*a, b, Polarity::Positive)
-                    .drop_from(&alpha_entry)
+                Ok(self
+                    .extend(alpha_entry.clone())
+                    .check_subtype(*a, b, Polarity::Positive)?
+                    .drop_from(&alpha_entry))
             }
             // <:∃R
             (a, Type::Exists(beta, sort, mut b), Polarity::Positive) if !a.is_exists() => {
@@ -798,9 +803,9 @@ impl TyCtx {
                     Entry::Unsolved(TyVar::Exists(beta_hat), sort),
                 ]);
                 b.substitute_exists(ExistsVar(beta.0), beta_hat);
-                new_tcx
-                    .check_subtype(a, *b, Polarity::Positive)
-                    .drop_from(&marker)
+                Ok(new_tcx
+                    .check_subtype(a, *b, Polarity::Positive)?
+                    .drop_from(&marker))
             }
             // -+L
             (a, b, Polarity::Positive)
@@ -828,16 +833,18 @@ impl TyCtx {
             }
             // <:Equiv
             (a, b, _) if !a.is_quantifier() && !b.is_quantifier() => self.check_tys_equal(a, b),
-            (a, b, p) => panic!("unexpected pattern when checking subtype: {a:?} {b:?} {p:?}"),
+            (a, b, p) => Err(format!(
+                "Couldn't determine if type {a:?} is a subtype of type {b:?} under polarity {p:?}."
+            )),
         }
     }
 
     /// Γ ⊢ P ≡ Q ⊣ ∆, under `self`, check that `p` is equivalent to `q` with output ctx ∆.
-    fn check_props_equal(self, p: Proposition, q: Proposition) -> Self {
+    fn check_props_equal(self, p: Proposition, q: Proposition) -> Result<Self, String> {
         // ≡PropEq
         let Proposition(p1, p2) = p;
         let Proposition(q1, q2) = q;
-        let new_tcx = self.check_equation(p1, q1, Sort::Natural);
+        let new_tcx = self.check_equation(p1, q1, Sort::Natural)?;
 
         let new_p2 = new_tcx.apply_to_term(p2);
         let new_q2 = new_tcx.apply_to_term(q2);
@@ -845,25 +852,25 @@ impl TyCtx {
     }
 
     /// Γ ⊢ t1 ≐ t2 : κ ⊣ ∆, check that `term1` equals `term2`, taking `self` to ∆.
-    fn check_equation(self, term1: Term, term2: Term, sort: Sort) -> Self {
+    fn check_equation(self, term1: Term, term2: Term, sort: Sort) -> Result<Self, String> {
         match (term1, term2, sort) {
             // CheckeqVar
-            (Term::ForallVar(var1), Term::ForallVar(var2), _) if var1 == var2 => self,
-            (Term::ExistsVar(var1), Term::ExistsVar(var2), _) if var1 == var2 => self,
+            (Term::ForallVar(var1), Term::ForallVar(var2), _) if var1 == var2 => Ok(self),
+            (Term::ExistsVar(var1), Term::ExistsVar(var2), _) if var1 == var2 => Ok(self),
             // CheckeqUnit
-            (Term::Unit, Term::Unit, Sort::Monotype) => self,
+            (Term::Unit, Term::Unit, Sort::Monotype) => Ok(self),
             // CheckeqBin
             (Term::Binary(a1, op1, a2), Term::Binary(b1, op2, b2), Sort::Monotype)
                 if op1 == op2 =>
             {
-                let new_tcx = self.check_equation(*a1, *b1, Sort::Monotype);
+                let new_tcx = self.check_equation(*a1, *b1, Sort::Monotype)?;
 
                 let new_a2 = new_tcx.apply_to_term(*a2);
                 let new_b2 = new_tcx.apply_to_term(*b2);
                 new_tcx.check_equation(new_a2, new_b2, Sort::Monotype)
             }
             // CheckeqZero
-            (Term::Zero, Term::Zero, Sort::Natural) => self,
+            (Term::Zero, Term::Zero, Sort::Natural) => Ok(self),
             // CheckeqSucc
             (Term::Succ(t1), Term::Succ(t2), Sort::Natural) => {
                 self.check_equation(*t1, *t2, Sort::Natural)
@@ -878,28 +885,26 @@ impl TyCtx {
             {
                 self.instantiate(alpha_hat, term, sort)
             }
-            (term1, term2, sort) => panic!(
-                "unexpected pattern for checking term equation: {term1:?} {term2:?} {sort:?}"
-            ),
+            (term1, term2, sort) => Err(format!("Unable to determine if term {term1:?} and term {term2:?} are equal under sort {sort:?}.")),
         }
     }
 
     /// Γ ⊢ A ≡ B ⊣ ∆, under `self`, check that `a` is equivalent to `b` with output ctx ∆.
-    fn check_tys_equal(self, a: Type, b: Type) -> Self {
+    fn check_tys_equal(self, a: Type, b: Type) -> Result<Self, String> {
         match (a, b) {
             // ≡Var
-            (Type::ForallVar(alpha1), Type::ForallVar(alpha2)) if alpha1 == alpha2 => self,
+            (Type::ForallVar(alpha1), Type::ForallVar(alpha2)) if alpha1 == alpha2 => Ok(self),
             // ≡Exvar
             (Type::ExistsVar(alpha_hat1), Type::ExistsVar(alpha_hat2))
                 if alpha_hat1 == alpha_hat2 =>
             {
-                self
+                Ok(self)
             }
             // ≡Unit
-            (Type::Unit, Type::Unit) => self,
+            (Type::Unit, Type::Unit) => Ok(self),
             // ≡⊕
             (Type::Binary(a1, op1, a2), Type::Binary(b1, op2, b2)) if op1 == op2 => {
-                let new_tcx = self.check_tys_equal(*a1, *b1);
+                let new_tcx = self.check_tys_equal(*a1, *b1)?;
 
                 let new_a2 = new_tcx.apply_to_ty(*a2);
                 let new_b2 = new_tcx.apply_to_ty(*b2);
@@ -907,7 +912,7 @@ impl TyCtx {
             }
             // ≡Vec
             (Type::Vec(t1, a1), Type::Vec(t2, a2)) => {
-                let new_tcx = self.check_terms_equal(t1, t2);
+                let new_tcx = self.check_terms_equal(t1, t2)?;
 
                 let new_a1 = new_tcx.apply_to_ty(*a1);
                 let new_a2 = new_tcx.apply_to_ty(*a2);
@@ -918,21 +923,25 @@ impl TyCtx {
                 if alpha1 == alpha2 && sort1 == sort2 =>
             {
                 let entry = Entry::Unsolved(TyVar::Forall(ForallVar(alpha1.0)), sort1);
-                let new_tcx = self.extend(entry.clone());
-                new_tcx.check_tys_equal(*a, *b).drop_from(&entry)
+                Ok(self
+                    .extend(entry.clone())
+                    .check_tys_equal(*a, *b)?
+                    .drop_from(&entry))
             }
             // ≡∃
             (Type::Exists(alpha1, sort1, a), Type::Exists(alpha2, sort2, b))
                 if alpha1 == alpha2 && sort1 == sort2 =>
             {
                 let entry = Entry::Unsolved(TyVar::Exists(ExistsVar(alpha1.0)), sort1);
-                let new_tcx = self.extend(entry.clone());
-                new_tcx.check_tys_equal(*a, *b).drop_from(&entry)
+                Ok(self
+                    .extend(entry.clone())
+                    .check_tys_equal(*a, *b)?
+                    .drop_from(&entry))
             }
             // ≡⊃
             // ≡∧
             (Type::Implies(p, a), Type::Implies(q, b)) | (Type::With(a, p), Type::With(b, q)) => {
-                let new_tcx = self.check_props_equal(p, q);
+                let new_tcx = self.check_props_equal(p, q)?;
                 let new_a = new_tcx.apply_to_ty(*a);
                 let new_b = new_tcx.apply_to_ty(*b);
                 new_tcx.check_tys_equal(new_a, new_b)
@@ -942,34 +951,35 @@ impl TyCtx {
             (Type::ExistsVar(alpha_hat), tau) | (tau, Type::ExistsVar(alpha_hat))
                 if !tau
                     .clone()
-                    .to_term()
+                    .to_term()?
                     .free_exists_vars()
                     .contains(&alpha_hat)
                     && self.is_unsolved(&TyVar::Exists(alpha_hat)) =>
             {
-                self.instantiate(alpha_hat, tau.to_term(), Sort::Monotype)
+                self.instantiate(alpha_hat, tau.to_term()?, Sort::Monotype)
             }
-            (a, b) => panic!("unexpected pattern for checking that types are equal: {a:?} {b:?}"),
+            (a, b) => Err(format!(
+                "Couldn't determine if type {a:?} is equivalent to type {b:?}."
+            )),
         }
     }
 
     /// Γ ⊢ A ≡ B ⊣ ∆, under `self`, check that `a` is equivalent to `b` with output ctx ∆.
-    fn check_terms_equal(self, a: Term, b: Term) -> Self {
-        // TODO: duplicated from ty, not sure if this is right
+    fn check_terms_equal(self, a: Term, b: Term) -> Result<Self, String> {
         match (a, b) {
             // ≡Var
-            (Term::ForallVar(alpha1), Term::ForallVar(alpha2)) if alpha1 == alpha2 => self,
+            (Term::ForallVar(alpha1), Term::ForallVar(alpha2)) if alpha1 == alpha2 => Ok(self),
             // ≡Exvar
             (Term::ExistsVar(alpha_hat1), Term::ExistsVar(alpha_hat2))
                 if alpha_hat1 == alpha_hat2 =>
             {
-                self
+                Ok(self)
             }
             // ≡Unit
-            (Term::Unit, Term::Unit) => self,
+            (Term::Unit, Term::Unit) => Ok(self),
             // ≡⊕
             (Term::Binary(a1, op1, a2), Term::Binary(b1, op2, b2)) if op1 == op2 => {
-                let new_tcx = self.check_terms_equal(*a1, *b1);
+                let new_tcx = self.check_terms_equal(*a1, *b1)?;
 
                 let new_a2 = new_tcx.apply_to_term(*a2);
                 let new_b2 = new_tcx.apply_to_term(*b2);
@@ -981,21 +991,22 @@ impl TyCtx {
                 if !tau.clone().free_exists_vars().contains(&alpha_hat)
                     && self.is_unsolved(&TyVar::Exists(alpha_hat)) =>
             {
-                // TODO: what sort
                 self.instantiate(alpha_hat, tau, Sort::Natural)
             }
-            (a, b) => panic!("unexpected pattern for checking that terms are equal: {a:?} {b:?}"),
+            (a, b) => Err(format!(
+                "Couldn't determine if term {a:?} is equivalent to term {b:?}."
+            )),
         }
     }
 
     /// Γ ⊢ α̂ := t : κ ⊣ ∆, under `self`, instantiate `var` such that `var` = `t` with output ctx ∆.
-    fn instantiate(self, var: ExistsVar, term: Term, sort: Sort) -> Self {
+    fn instantiate(self, var: ExistsVar, term: Term, sort: Sort) -> Result<Self, String> {
         match (term, sort) {
             // InstZero
-            (Term::Zero, Sort::Natural) => self.replace(
+            (Term::Zero, Sort::Natural) => Ok(self.replace(
                 &Entry::Unsolved(TyVar::Exists(var), Sort::Natural),
                 Entry::SolvedExists(var, Sort::Natural, Term::Zero),
-            ),
+            )),
             // InstSucc
             (Term::Succ(t1), Sort::Natural)
                 if self
@@ -1010,7 +1021,7 @@ impl TyCtx {
                         Entry::SolvedExists(
                             var,
                             Sort::Natural,
-                            Term::Succ(Box::new(Term::ExistsVar(alpha_hat1))),
+                            Term::succ(Term::ExistsVar(alpha_hat1)),
                         ),
                     ],
                 );
@@ -1030,15 +1041,15 @@ impl TyCtx {
                             Entry::SolvedExists(
                                 var,
                                 Sort::Monotype,
-                                Term::Binary(
-                                    Box::new(Term::ExistsVar(alpha_hat1)),
+                                Term::binary(
+                                    Term::ExistsVar(alpha_hat1),
                                     op,
-                                    Box::new(Term::ExistsVar(alpha_hat2)),
+                                    Term::ExistsVar(alpha_hat2),
                                 ),
                             ),
                         ],
                     )
-                    .instantiate(alpha_hat1, *t1, Sort::Monotype);
+                    .instantiate(alpha_hat1, *t1, Sort::Monotype)?;
 
                 let new_t2 = new_tcx.apply_to_term(*t2);
                 new_tcx.instantiate(alpha_hat2, new_t2, Sort::Monotype)
@@ -1048,10 +1059,10 @@ impl TyCtx {
                 if self.is_unsolved(&TyVar::Exists(var))
                     && self.is_unsolved(&TyVar::Exists(beta)) =>
             {
-                self.replace(
+                Ok(self.replace(
                     &Entry::Unsolved(TyVar::Exists(beta), sort),
                     Entry::SolvedExists(beta, sort, Term::ExistsVar(var)),
-                )
+                ))
             }
             // InstSolve
             (term, sort)
@@ -1061,14 +1072,14 @@ impl TyCtx {
                         .drop_from(&Entry::Unsolved(TyVar::Exists(var), sort))
                         .entails(&term, sort) =>
             {
-                self.replace(
+                Ok(self.replace(
                     &Entry::Unsolved(TyVar::Exists(var), sort),
                     Entry::SolvedExists(var, sort, term),
-                )
+                ))
             }
-            (term, sort) => {
-                panic!("unexpected pattern when instantiating existential var: {var:?} {term:?} {sort:?}")
-            }
+            (term, sort) => Err(format!(
+                "Unable to instantiate existential var {var:?} to term {term:?} with sort {sort:?}."
+            )),
         }
     }
 
@@ -1169,6 +1180,7 @@ impl TyCtx {
         }
     }
 
+    #[allow(dead_code)]
     /// Γ ⊢ A⃗ p types, under `self`, `tys` are well-formed with principality `p`.
     fn tys_principality_well_formed(&self, tys: Vec<Type>, p: Principality) -> bool {
         // PrincipalTypevecWF
@@ -1176,6 +1188,7 @@ impl TyCtx {
             .all(|ty| self.ty_principality_well_formed(ty, p))
     }
 
+    #[allow(dead_code)]
     /// Γ ctx, algorithmic context `self` is well-formed.
     fn well_formed(mut self) -> bool {
         match self.0.pop() {
@@ -1216,6 +1229,7 @@ impl TyCtx {
         }
     }
 
+    #[allow(dead_code)]
     fn domain(&self) -> HashSet<TyVar> {
         let mut domain = HashSet::new();
 
@@ -1239,14 +1253,14 @@ impl TyCtx {
     }
 
     /// Γ ⊢ P true ⊣ ∆, under `self`, check `prop`, with output ctx ∆.
-    fn check_prop(self, prop: Proposition) -> Self {
+    fn check_prop(self, prop: Proposition) -> Result<Self, String> {
         // CheckpropEq
         let Proposition(t1, t2) = prop;
         self.check_equation(t1, t2, Sort::Natural)
     }
 
     /// Γ / P true ⊣ ∆⊥, incorporate `prop` into `self`, producing output ctx ∆ or ⊥.
-    fn assume_prop(self, prop: Proposition) -> MaybeTcx {
+    fn assume_prop(self, prop: Proposition) -> Result<MaybeTcx, String> {
         // ElimpropEq
         let Proposition(t1, t2) = prop;
         self.unify(t1, t2, Sort::Natural)
@@ -1258,38 +1272,38 @@ impl TyCtx {
         branches: Branches,
         mut tys: VecDeque<Type>,
         principality: Principality,
-    ) -> bool {
+    ) -> Result<bool, String> {
         match tys.pop_front() {
             // CoversEmpty
-            None => branches
+            None => Ok(branches
                 .0
                 .front()
-                .is_some_and(|Branch(ps, _)| ps.is_empty()),
+                .is_some_and(|Branch(ps, _)| ps.is_empty())),
             // Covers1
             Some(Type::Unit) => {
-                let expanded = branches.expand_unit_pats();
+                let expanded = branches.expand_unit_pats()?;
                 self.branches_cover(expanded, tys, principality)
             }
             // Covers×
             Some(Type::Binary(a1, Connective::Product, a2)) => {
-                let expanded = branches.expand_pair_pats();
+                let expanded = branches.expand_pair_pats()?;
                 tys.push_front(*a2);
                 tys.push_front(*a1);
                 self.branches_cover(expanded, tys, principality)
             }
             // Covers+
             Some(Type::Binary(a1, Connective::Sum, a2)) => {
-                let (l, r) = branches.expand_sum_pats();
+                let (l, r) = branches.expand_sum_pats()?;
 
                 let mut l_tys = tys.clone();
                 l_tys.push_front(*a1);
-                let covers_l = self.clone().branches_cover(l, l_tys, principality);
+                let covers_l = self.clone().branches_cover(l, l_tys, principality)?;
 
                 let mut r_tys = tys;
                 r_tys.push_front(*a2);
-                let covers_r = self.branches_cover(r, r_tys, principality);
+                let covers_r = self.branches_cover(r, r_tys, principality)?;
 
-                covers_l && covers_r
+                Ok(covers_l && covers_r)
             }
             // Covers∃
             Some(Type::Exists(ident, sort, a)) => {
@@ -1310,7 +1324,7 @@ impl TyCtx {
                 }
             }
             Some(Type::Vec(term, ty)) if branches.guarded() => {
-                let (nils, conses) = branches.expand_vec_pats();
+                let (nils, conses) = branches.expand_vec_pats()?;
 
                 let nil_tys = tys.clone();
 
@@ -1327,23 +1341,23 @@ impl TyCtx {
                             Proposition(term.clone(), Term::Zero),
                             nils,
                             nil_tys,
-                        );
+                        )?;
                         let covers_cons = new_tcx.branches_cover_assuming(
-                            Proposition(term, Term::Succ(Box::new(Term::ForallVar(n)))),
+                            Proposition(term, Term::succ(Term::ForallVar(n))),
                             conses,
                             cons_tys,
-                        );
+                        )?;
 
-                        covers_nil && covers_cons
+                        Ok(covers_nil && covers_cons)
                     }
                     // CoversVec!̸
                     Principality::NonPrincipal => {
                         let covers_nil =
-                            self.branches_cover(nils, nil_tys, Principality::NonPrincipal);
+                            self.branches_cover(nils, nil_tys, Principality::NonPrincipal)?;
                         let covers_cons =
-                            new_tcx.branches_cover(conses, cons_tys, Principality::NonPrincipal);
+                            new_tcx.branches_cover(conses, cons_tys, Principality::NonPrincipal)?;
 
-                        covers_nil && covers_cons
+                        Ok(covers_nil && covers_cons)
                     }
                 }
             }
@@ -1361,12 +1375,12 @@ impl TyCtx {
         prop: Proposition,
         branches: Branches,
         tys: VecDeque<Type>,
-    ) -> bool {
+    ) -> Result<bool, String> {
         let Proposition(term1, term2) = prop;
 
         let new_term1 = self.apply_to_term(term1);
         let new_term2 = self.apply_to_term(term2);
-        let maybe_tcx = self.unify(new_term1, new_term2, Sort::Natural);
+        let maybe_tcx = self.unify(new_term1, new_term2, Sort::Natural)?;
 
         match maybe_tcx {
             // CoversEq
@@ -1375,21 +1389,21 @@ impl TyCtx {
                 new_tcx.branches_cover(branches, new_tys, Principality::Principal)
             }
             // CoversEqBot
-            MaybeTcx::Bottom => true,
+            MaybeTcx::Bottom => Ok(true),
         }
     }
 
     /// Γ / σ ≐ τ : κ ⊣ ∆⊥, unify `term1` and `term2`, taking `self` to ∆ or ⊥.
-    fn unify(self, term1: Term, term2: Term, sort: Sort) -> MaybeTcx {
+    fn unify(self, term1: Term, term2: Term, sort: Sort) -> Result<MaybeTcx, String> {
         match (term1, term2, sort) {
             // ElimeqUvarRefl
             (Term::ForallVar(ForallVar(alpha1)), Term::ForallVar(ForallVar(alpha2)), _)
                 if alpha1 == alpha2 =>
             {
-                MaybeTcx::Valid(self)
+                Ok(MaybeTcx::Valid(self))
             }
             // ElimeqZero
-            (Term::Zero, Term::Zero, Sort::Natural) => MaybeTcx::Valid(self),
+            (Term::Zero, Term::Zero, Sort::Natural) => Ok(MaybeTcx::Valid(self)),
             // ElimeqSucc
             (Term::Succ(s1), Term::Succ(s2), Sort::Natural) => self.unify(*s1, *s2, Sort::Natural),
             // ElimeqUvarL
@@ -1398,21 +1412,23 @@ impl TyCtx {
                 if !term.free_forall_vars().contains(&alpha)
                     && self.find_forall_solution(alpha).is_none() =>
             {
-                MaybeTcx::Valid(self.extend(Entry::SolvedForall(alpha, term)))
+                Ok(MaybeTcx::Valid(
+                    self.extend(Entry::SolvedForall(alpha, term)),
+                ))
             }
             // ElimeqUvarL⊥
             // ElimeqUvarR⊥
             (Term::ForallVar(alpha), term, _) | (term, Term::ForallVar(alpha), _)
                 if term.free_forall_vars().contains(&alpha) =>
             {
-                MaybeTcx::Bottom
+                Ok(MaybeTcx::Bottom)
             }
             // ElimeqUnit
-            (Term::Unit, Term::Unit, Sort::Monotype) => MaybeTcx::Valid(self),
+            (Term::Unit, Term::Unit, Sort::Monotype) => Ok(MaybeTcx::Valid(self)),
             (Term::Binary(a1, op1, a2), Term::Binary(b1, op2, b2), Sort::Monotype)
                 if op1 == op2 =>
             {
-                let maybe_tcx = self.unify(*a1, *b1, Sort::Monotype);
+                let maybe_tcx = self.unify(*a1, *b1, Sort::Monotype)?;
                 match maybe_tcx {
                     // ElimeqBin
                     MaybeTcx::Valid(new_tcx) => {
@@ -1421,14 +1437,14 @@ impl TyCtx {
                         new_tcx.unify(new_b1, new_b2, Sort::Monotype)
                     }
                     // ElimeqBinBot
-                    MaybeTcx::Bottom => MaybeTcx::Bottom,
+                    MaybeTcx::Bottom => Ok(MaybeTcx::Bottom),
                 }
             }
             // ElimeqClash
-            (term1, term2, _) if term1.clashes_with(&term2) => MaybeTcx::Bottom,
-            (term1, term2, sort) => {
-                panic!("unexpected unification pattern for two terms: {term1:?} {term2:?} {sort:?}")
-            }
+            (term1, term2, _) if term1.clashes_with(&term2) => Ok(MaybeTcx::Bottom),
+            (term1, term2, sort) => Err(format!(
+                "Unable to unify terms {term1:?} and {term2:?} under sort {sort:?}."
+            )),
         }
     }
 }
@@ -1450,20 +1466,21 @@ mod tests {
     #[test]
     fn basic() {
         let tcx = TyCtx::new();
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::Unit);
+        let (ty, p, _) = tcx.synth_expr_ty(Expr::Unit).unwrap();
         assert_eq!(ty, Type::Unit);
         assert_eq!(p, Principality::Principal);
     }
 
     #[test]
     fn basic_vec() {
-        // TODO: this should be inferred without annotation
         let tcx = TyCtx::new();
         let vec_ty = Type::vec(Term::succ(Term::succ(Term::Zero)), Type::Unit);
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
-            Expr::cons(Expr::Unit, Expr::cons(Expr::Unit, Expr::Nil)),
-            vec_ty.clone(),
-        ));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::cons(Expr::Unit, Expr::cons(Expr::Unit, Expr::Nil)),
+                vec_ty.clone(),
+            ))
+            .unwrap();
         assert_eq!(ty, vec_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -1473,16 +1490,18 @@ mod tests {
         let tcx = TyCtx::new();
         let x = Ident(Intern::new("x".to_string()));
         let vec_ty = Type::vec(Term::succ(Term::Zero), Type::Unit);
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
-            Expr::case(
-                Expr::Unit,
-                Branches::from_iter([Branch::from_iter(
-                    [Pattern::Var(x)],
-                    Expr::cons(Expr::Var(x), Expr::Nil),
-                )]),
-            ),
-            vec_ty.clone(),
-        ));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::case(
+                    Expr::Unit,
+                    Branches::from_iter([Branch::from_iter(
+                        [Pattern::Var(x)],
+                        Expr::cons(Expr::Var(x), Expr::Nil),
+                    )]),
+                ),
+                vec_ty.clone(),
+            ))
+            .unwrap();
         assert_eq!(ty, vec_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -1504,10 +1523,12 @@ mod tests {
                 ),
             ),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
-            Expr::inj2(Expr::function(x, Expr::Var(x))),
-            sum_ty.clone(),
-        ));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::inj2(Expr::function(x, Expr::Var(x))),
+                sum_ty.clone(),
+            ))
+            .unwrap();
         assert_eq!(ty, sum_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -1518,19 +1539,21 @@ mod tests {
         let x = Ident(Intern::new("x".to_string()));
         let y = Ident(Intern::new("y".to_string()));
         let prod_ty = Type::binary(Type::Unit, Connective::Product, Type::Unit);
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
-            Expr::case(
-                Expr::annotation(Expr::pair(Expr::Unit, Expr::Unit), prod_ty.clone()),
-                Branches::from_iter([
-                    Branch::from_iter(
-                        [Pattern::pair(Pattern::Var(x), Pattern::Var(y))],
-                        Expr::pair(Expr::Var(x), Expr::Var(y)),
-                    ),
-                    Branch::from_iter([Pattern::Wildcard], Expr::pair(Expr::Unit, Expr::Unit)),
-                ]),
-            ),
-            prod_ty.clone(),
-        ));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::case(
+                    Expr::annotation(Expr::pair(Expr::Unit, Expr::Unit), prod_ty.clone()),
+                    Branches::from_iter([
+                        Branch::from_iter(
+                            [Pattern::pair(Pattern::Var(x), Pattern::Var(y))],
+                            Expr::pair(Expr::Var(x), Expr::Var(y)),
+                        ),
+                        Branch::from_iter([Pattern::Wildcard], Expr::pair(Expr::Unit, Expr::Unit)),
+                    ]),
+                ),
+                prod_ty.clone(),
+            ))
+            .unwrap();
         assert_eq!(ty, prod_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -1544,18 +1567,19 @@ mod tests {
             Connective::Sum,
             Type::vec(Term::Zero, Type::Unit),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::app(
-            Expr::annotation(
-                Expr::function(x, Expr::inj1(Expr::Var(x))),
-                Type::binary(Type::Unit, Connective::Function, result_ty.clone()),
-            ),
-            Spine::from_iter([Expr::Unit]),
-        ));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::app(
+                Expr::annotation(
+                    Expr::function(x, Expr::inj1(Expr::Var(x))),
+                    Type::binary(Type::Unit, Connective::Function, result_ty.clone()),
+                ),
+                Spine::from_iter([Expr::Unit]),
+            ))
+            .unwrap();
         assert_eq!(ty, result_ty);
         assert_eq!(p, Principality::Principal);
     }
 
-    // TODO: can't apply id function to a vector?
     #[test]
     fn from_paper() {
         let id = Ident(Intern::new("id".to_string()));
@@ -1574,8 +1598,9 @@ mod tests {
             Principality::Principal,
         ));
 
-        let (ty, p, _) =
-            tcx.synth_expr_ty(Expr::app(Expr::Var(id), Spine::from_iter([Expr::Unit])));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::app(Expr::Var(id), Spine::from_iter([Expr::Unit])))
+            .unwrap();
         assert_eq!(ty, Type::Unit);
         assert_eq!(p, Principality::Principal);
     }
@@ -1608,23 +1633,25 @@ mod tests {
                 ),
             ),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
-            Expr::function(
-                xs,
-                Expr::case(
-                    Expr::Var(xs),
-                    Branches::from_iter([
-                        Branch::from_iter(
-                            [Pattern::cons(Pattern::Var(y), Pattern::Var(ys))],
-                            Expr::cons(Expr::Var(y), Expr::Var(ys)),
-                        ),
-                        // TODO: wildcard or var here in pattern fails?
-                        Branch::from_iter([Pattern::Nil], Expr::Nil),
-                    ]),
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::function(
+                    xs,
+                    Expr::case(
+                        Expr::Var(xs),
+                        Branches::from_iter([
+                            Branch::from_iter(
+                                [Pattern::cons(Pattern::Var(y), Pattern::Var(ys))],
+                                Expr::cons(Expr::Var(y), Expr::Var(ys)),
+                            ),
+                            // TODO: wildcard or var here in pattern fails?
+                            Branch::from_iter([Pattern::Nil], Expr::Nil),
+                        ]),
+                    ),
                 ),
-            ),
-            fn_ty.clone(),
-        ));
+                fn_ty.clone(),
+            ))
+            .unwrap();
         assert_eq!(ty, fn_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -1658,29 +1685,31 @@ mod tests {
                 ),
             ),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
-            Expr::Fix(
-                id,
-                Value::function(
-                    xs,
-                    Expr::case(
-                        Expr::Var(xs),
-                        Branches::from_iter([
-                            Branch::from_iter([Pattern::Nil], Expr::Nil),
-                            Branch::from_iter(
-                                // TODO: add app to id
-                                [Pattern::cons(Pattern::Var(y), Pattern::Var(ys))],
-                                Expr::cons(
-                                    Expr::Var(y),
-                                    Expr::app(Expr::Var(id), Spine::from_iter([Expr::Var(ys)])),
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::Fix(
+                    id,
+                    Value::function(
+                        xs,
+                        Expr::case(
+                            Expr::Var(xs),
+                            Branches::from_iter([
+                                Branch::from_iter([Pattern::Nil], Expr::Nil),
+                                Branch::from_iter(
+                                    // TODO: add app to id
+                                    [Pattern::cons(Pattern::Var(y), Pattern::Var(ys))],
+                                    Expr::cons(
+                                        Expr::Var(y),
+                                        Expr::app(Expr::Var(id), Spine::from_iter([Expr::Var(ys)])),
+                                    ),
                                 ),
-                            ),
-                        ]),
+                            ]),
+                        ),
                     ),
                 ),
-            ),
-            fn_ty.clone(),
-        ));
+                fn_ty.clone(),
+            ))
+            .unwrap();
         assert_eq!(ty, fn_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -1721,7 +1750,9 @@ mod tests {
             ),
         );
         let id = Expr::function(x, Expr::Var(x));
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::app(apply_fn, Spine::from_iter([id, Expr::Unit])));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::app(apply_fn, Spine::from_iter([id, Expr::Unit])))
+            .unwrap();
         assert_eq!(ty, Type::Unit);
         assert_eq!(p, Principality::Principal);
     }
@@ -1762,7 +1793,9 @@ mod tests {
             ),
         );
 
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(head, head_ty.clone()));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(head, head_ty.clone()))
+            .unwrap();
         assert_eq!(ty, head_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -1805,7 +1838,9 @@ mod tests {
 
         let x = Ident(Intern::new("x".to_string()));
         let id_fn = Expr::function(x, Expr::Var(x));
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::app(apply_id, Spine::from_iter([id_fn])));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::app(apply_id, Spine::from_iter([id_fn])))
+            .unwrap();
         assert_eq!(ty, result_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -1879,7 +1914,9 @@ mod tests {
                 ),
             ),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(rec_map, anno_ty.clone()));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(rec_map, anno_ty.clone()))
+            .unwrap();
         assert_eq!(ty, anno_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -1957,7 +1994,9 @@ mod tests {
                 ),
             ),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(rec_zip, anno_ty.clone()));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(rec_zip, anno_ty.clone()))
+            .unwrap();
         assert_eq!(ty, anno_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -1971,7 +2010,9 @@ mod tests {
             Sort::Natural,
             Type::vec(Term::ExistsVar(ExistsVar(k.0)), Type::Unit),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(Expr::Nil, anno_ty.clone()));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(Expr::Nil, anno_ty.clone()))
+            .unwrap();
         assert_eq!(ty, anno_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -1985,16 +2026,18 @@ mod tests {
             Sort::Natural,
             Type::vec(Term::ExistsVar(ExistsVar(k.0)), Type::Unit),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
-            Expr::case(
-                Expr::Unit,
-                Branches::from_iter([
-                    Branch::from_iter([Pattern::Wildcard], Expr::Nil),
-                    Branch::from_iter([Pattern::Unit], Expr::cons(Expr::Unit, Expr::Nil)),
-                ]),
-            ),
-            anno_ty.clone(),
-        ));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::case(
+                    Expr::Unit,
+                    Branches::from_iter([
+                        Branch::from_iter([Pattern::Wildcard], Expr::Nil),
+                        Branch::from_iter([Pattern::Unit], Expr::cons(Expr::Unit, Expr::Nil)),
+                    ]),
+                ),
+                anno_ty.clone(),
+            ))
+            .unwrap();
         assert_eq!(ty, anno_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -2071,7 +2114,9 @@ mod tests {
                 ),
             ),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(maybe_pop_front, anno_ty.clone()));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(maybe_pop_front, anno_ty.clone()))
+            .unwrap();
         assert_eq!(ty, anno_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -2085,10 +2130,12 @@ mod tests {
             Sort::Natural,
             Type::vec(Term::ExistsVar(ExistsVar(k.0)), Type::Unit),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
-            Expr::cons(Expr::Unit, Expr::annotation(Expr::Nil, anno_ty.clone())),
-            anno_ty.clone(),
-        ));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::cons(Expr::Unit, Expr::annotation(Expr::Nil, anno_ty.clone())),
+                anno_ty.clone(),
+            ))
+            .unwrap();
         assert_eq!(ty, anno_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -2172,7 +2219,9 @@ mod tests {
                 ),
             ),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(rec_filter, anno_ty.clone()));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(rec_filter, anno_ty.clone()))
+            .unwrap();
         assert_eq!(ty, anno_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -2217,10 +2266,12 @@ mod tests {
             ),
         );
         // TODO: should still work even without outer annotation?
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
-            Expr::app(function, Spine::from_iter([Expr::Var(x)])),
-            res_ty.clone(),
-        ));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::app(function, Spine::from_iter([Expr::Var(x)])),
+                res_ty.clone(),
+            ))
+            .unwrap();
         assert_eq!(ty, res_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -2238,29 +2289,31 @@ mod tests {
             ),
             Principality::Principal,
         ));
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
-            Expr::case(
-                Expr::Var(x),
-                Branches::from_iter([
-                    Branch::from_iter(
-                        [Pattern::inj1(Pattern::pair(
-                            Pattern::Wildcard,
-                            Pattern::Var(y),
-                        ))],
-                        Expr::Var(y),
-                    ),
-                    Branch::from_iter(
-                        [Pattern::inj2(Pattern::inj2(Pattern::Var(y)))],
-                        Expr::Var(y),
-                    ),
-                    Branch::from_iter(
-                        [Pattern::inj2(Pattern::inj1(Pattern::Wildcard))],
-                        Expr::Unit,
-                    ),
-                ]),
-            ),
-            Type::Unit,
-        ));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::case(
+                    Expr::Var(x),
+                    Branches::from_iter([
+                        Branch::from_iter(
+                            [Pattern::inj1(Pattern::pair(
+                                Pattern::Wildcard,
+                                Pattern::Var(y),
+                            ))],
+                            Expr::Var(y),
+                        ),
+                        Branch::from_iter(
+                            [Pattern::inj2(Pattern::inj2(Pattern::Var(y)))],
+                            Expr::Var(y),
+                        ),
+                        Branch::from_iter(
+                            [Pattern::inj2(Pattern::inj1(Pattern::Wildcard))],
+                            Expr::Unit,
+                        ),
+                    ]),
+                ),
+                Type::Unit,
+            ))
+            .unwrap();
         assert_eq!(ty, Type::Unit);
         assert_eq!(p, Principality::Principal);
     }
@@ -2275,25 +2328,27 @@ mod tests {
             Sort::Monotype,
             Type::vec(Term::succ(Term::Zero), Type::ExistsVar(ExistsVar(t.0))),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
-            Expr::case(
-                Expr::annotation(
-                    Expr::inj1(Expr::Unit),
-                    Type::binary(Type::Unit, Connective::Sum, Type::Unit),
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::case(
+                    Expr::annotation(
+                        Expr::inj1(Expr::Unit),
+                        Type::binary(Type::Unit, Connective::Sum, Type::Unit),
+                    ),
+                    Branches::from_iter([
+                        Branch::from_iter(
+                            [Pattern::inj1(Pattern::Wildcard)],
+                            Expr::cons(Expr::Unit, Expr::Nil),
+                        ),
+                        Branch::from_iter(
+                            [Pattern::Wildcard],
+                            Expr::cons(Expr::pair(Expr::Unit, Expr::Unit), Expr::Nil),
+                        ),
+                    ]),
                 ),
-                Branches::from_iter([
-                    Branch::from_iter(
-                        [Pattern::inj1(Pattern::Wildcard)],
-                        Expr::cons(Expr::Unit, Expr::Nil),
-                    ),
-                    Branch::from_iter(
-                        [Pattern::Wildcard],
-                        Expr::cons(Expr::pair(Expr::Unit, Expr::Unit), Expr::Nil),
-                    ),
-                ]),
-            ),
-            anno_ty.clone(),
-        ));
+                anno_ty.clone(),
+            ))
+            .unwrap();
         assert_eq!(ty, anno_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -2307,13 +2362,15 @@ mod tests {
             Term::succ(Term::succ(Term::Zero)),
             Type::exists(t, Sort::Monotype, Type::ExistsVar(ExistsVar(t.0))),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
-            Expr::cons(
-                Expr::Unit,
-                Expr::cons(Expr::pair(Expr::Unit, Expr::Unit), Expr::Nil),
-            ),
-            anno_ty.clone(),
-        ));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::cons(
+                    Expr::Unit,
+                    Expr::cons(Expr::pair(Expr::Unit, Expr::Unit), Expr::Nil),
+                ),
+                anno_ty.clone(),
+            ))
+            .unwrap();
         assert_eq!(ty, anno_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -2403,7 +2460,9 @@ mod tests {
                 ),
             ),
         );
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(foldr, anno_ty.clone()));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(foldr, anno_ty.clone()))
+            .unwrap();
         assert_eq!(ty, anno_ty);
         assert_eq!(p, Principality::Principal);
     }
@@ -2424,16 +2483,18 @@ mod tests {
         ));
 
         let res_ty = Type::exists(t, Sort::Monotype, Type::ExistsVar(ExistsVar(t.0)));
-        let (ty, p, _) = tcx.synth_expr_ty(Expr::annotation(
-            Expr::case(
-                Expr::Var(xs),
-                Branches::from_iter([Branch::from_iter(
-                    [Pattern::cons(Pattern::Var(x), Pattern::Wildcard)],
-                    Expr::Var(x),
-                )]),
-            ),
-            res_ty.clone(),
-        ));
+        let (ty, p, _) = tcx
+            .synth_expr_ty(Expr::annotation(
+                Expr::case(
+                    Expr::Var(xs),
+                    Branches::from_iter([Branch::from_iter(
+                        [Pattern::cons(Pattern::Var(x), Pattern::Wildcard)],
+                        Expr::Var(x),
+                    )]),
+                ),
+                res_ty.clone(),
+            ))
+            .unwrap();
         assert_eq!(ty, res_ty);
         assert_eq!(p, Principality::Principal);
     }

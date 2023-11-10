@@ -54,20 +54,17 @@ impl Type {
         }
     }
 
-    pub fn to_term(self) -> Term {
+    pub fn to_term(self) -> Result<Term, String> {
         match self {
-            // TODO: should this be a panic?
             Self::Forall(_, _, _)
             | Self::Exists(_, _, _)
             | Self::Implies(_, _)
             | Self::With(_, _)
-            | Self::Vec(_, _) => panic!("cannot convert type to a term"),
-            Self::Unit => Term::Unit,
-            Self::ForallVar(f) => Term::ForallVar(f),
-            Self::ExistsVar(e) => Term::ExistsVar(e),
-            Self::Binary(a, op, b) => {
-                Term::Binary(Box::new(a.to_term()), op, Box::new(b.to_term()))
-            }
+            | Self::Vec(_, _) => Err(format!("Type {self:?} is not a valid monotype.")),
+            Self::Unit => Ok(Term::Unit),
+            Self::ForallVar(f) => Ok(Term::ForallVar(f)),
+            Self::ExistsVar(e) => Ok(Term::ExistsVar(e)),
+            Self::Binary(a, op, b) => Ok(Term::binary(a.to_term()?, op, b.to_term()?)),
         }
     }
 
@@ -205,7 +202,6 @@ pub enum Sort {
     Monotype,
 }
 
-// TODO: combine terms and types?
 /// Terms and monotypes share the same grammar but are distinguished by [`Sort`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Term {
@@ -220,14 +216,11 @@ pub enum Term {
 impl Term {
     pub fn into_ty(self) -> Type {
         match self {
-            // TODO: should this be a panic? also in applying ctx to ty
-            Self::Zero | Self::Succ(_) => panic!("cannot convert a Natural term to a type"),
+            Self::Zero | Self::Succ(_) => panic!("should only be called with monotypes"),
             Self::Unit => Type::Unit,
             Self::ForallVar(f) => Type::ForallVar(f),
             Self::ExistsVar(e) => Type::ExistsVar(e),
-            Self::Binary(a, op, b) => {
-                Type::Binary(Box::new(a.into_ty()), op, Box::new(b.into_ty()))
-            }
+            Self::Binary(a, op, b) => Type::binary(a.into_ty(), op, b.into_ty()),
         }
     }
 

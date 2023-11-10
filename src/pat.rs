@@ -31,42 +31,46 @@ impl Branches {
 
     /// Π guarded, `self` contains a list pattern constructor in head position.
     pub fn guarded(&self) -> bool {
-        self.0.iter().any(|Branch(ps, _)| match ps.front() {
-            Some(Pattern::Nil | Pattern::Cons(_, _)) => true,
-            Some(Pattern::Var(_) | Pattern::Wildcard) | None => false,
-            _ => panic!("unexpected pattern when checking if branches are guarded"),
-        })
+        self.0
+            .iter()
+            .any(|Branch(ps, _)| matches!(ps.front(), Some(Pattern::Nil | Pattern::Cons(_, _))))
     }
 
     /// Π ~>Vec Π[] || Π::, expand vector patterns in `self`.
-    pub fn expand_vec_pats(self) -> (Self, Self) {
-        self.0.into_iter().fold(
+    pub fn expand_vec_pats(self) -> Result<(Self, Self), String> {
+        self.0.into_iter().try_fold(
             (Self::new(), Self::new()),
-            |(mut nils, mut conses), Branch(mut ps, e)| {
-                match ps.pop_front() {
-                    Some(Pattern::Nil) => nils.0.push_front(Branch(ps, e)),
-                    Some(Pattern::Cons(hd, tl)) => {
-                        ps.push_front(*tl);
-                        ps.push_front(*hd);
-                        conses.0.push_front(Branch(ps, e));
-                    }
-                    None => {}
-                    Some(Pattern::Var(_) | Pattern::Wildcard) => {
-                        nils.0.push_front(Branch(ps.clone(), e.clone()));
-                        ps.push_front(Pattern::Wildcard);
-                        ps.push_front(Pattern::Wildcard);
-                        conses.0.push_front(Branch(ps, e));
-                    }
-                    Some(pat) => panic!("unexpected pattern when expanding vec patterns: {pat:?}"),
-                }
+            |(mut nils, mut conses), Branch(mut ps, e)| match ps.pop_front() {
+                Some(Pattern::Nil) => {
+                    nils.0.push_front(Branch(ps, e));
 
-                (nils, conses)
+                    Ok((nils, conses))
+                }
+                Some(Pattern::Cons(hd, tl)) => {
+                    ps.push_front(*tl);
+                    ps.push_front(*hd);
+                    conses.0.push_front(Branch(ps, e));
+
+                    Ok((nils, conses))
+                }
+                None => Ok((nils, conses)),
+                Some(Pattern::Var(_) | Pattern::Wildcard) => {
+                    nils.0.push_front(Branch(ps.clone(), e.clone()));
+                    ps.push_front(Pattern::Wildcard);
+                    ps.push_front(Pattern::Wildcard);
+                    conses.0.push_front(Branch(ps, e));
+
+                    Ok((nils, conses))
+                }
+                Some(pat) => Err(format!(
+                    "Invalid pattern:\nExpected patterns that match vec type but got {pat:?}."
+                )),
             },
         )
     }
 
     /// Π ~>× Π', expand head pair patterns in `self`.
-    pub fn expand_pair_pats(mut self) -> Self {
+    pub fn expand_pair_pats(mut self) -> Result<Self, String> {
         for Branch(ps, _) in &mut self.0 {
             match ps.pop_front() {
                 Some(Pattern::Pair(p1, p2)) => {
@@ -78,38 +82,64 @@ impl Branches {
                     ps.push_front(Pattern::Wildcard);
                 }
                 None => {}
-                _ => panic!("unexpected pattern when expanding pair patterns"),
+                Some(pat) => {
+                    return Err(format!(
+                        "Invalid pattern:\nExpected patterns that match product type but got {pat:?}."
+                    ));
+                }
             }
         }
 
-        self
+        Ok(self)
     }
 
     /// Π ~>+ Πₗ || Πᵣ, expand head sum patterns in `self` into L and R sets.
-    pub fn expand_sum_pats(self) -> (Self, Self) {
-        self.0.into_iter().fold(
+    pub fn expand_sum_pats(self) -> Result<(Self, Self), String> {
+        self.0.into_iter().try_fold(
             (Self::new(), Self::new()),
-            |(mut l, mut r), Branch(mut ps, e)| {
-                match ps.pop_front() {
-                    Some(Pattern::Inj1(p)) => {
-                        ps.push_front(*p);
-                        l.0.push_front(Branch(ps, e));
-                    }
-                    Some(Pattern::Inj2(p)) => {
-                        ps.push_front(*p);
-                        r.0.push_front(Branch(ps, e));
-                    }
-                    Some(Pattern::Var(_) | Pattern::Wildcard) => {
-                        ps.push_front(Pattern::Wildcard);
-                        l.0.push_front(Branch(ps.clone(), e.clone()));
-                        r.0.push_front(Branch(ps, e));
-                    }
-                    None => {}
-                    _ => panic!("unexpected pattern when expanding sum patterns"),
+            |(mut l, mut r), Branch(mut ps, e)| match ps.pop_front() {
+                Some(Pattern::Inj1(p)) => {
+                    ps.push_front(*p);
+                    l.0.push_front(Branch(ps, e));
+
+                    Ok((l, r))
                 }
-                (l, r)
+                Some(Pattern::Inj2(p)) => {
+                    ps.push_front(*p);
+                    r.0.push_front(Branch(ps, e));
+
+                    Ok((l, r))
+                }
+                Some(Pattern::Var(_) | Pattern::Wildcard) => {
+                    ps.push_front(Pattern::Wildcard);
+                    l.0.push_front(Branch(ps.clone(), e.clone()));
+                    r.0.push_front(Branch(ps, e));
+
+                    Ok((l, r))
+                }
+                None => Ok((l, r)),
+                Some(pat) => Err(format!(
+                    "Invalid pattern:\nExpected patterns that match sum type but got {pat:?}."
+                )),
             },
         )
+    }
+
+    /// Π ~>1 Π', remove head variable, wildcard, and unit patterns patterns from `self`.
+    pub fn expand_unit_pats(mut self) -> Result<Self, String> {
+        for Branch(ps, _) in &mut self.0 {
+            match ps.pop_front() {
+                Some(Pattern::Var(_) | Pattern::Wildcard | Pattern::Unit) => {}
+                None => {}
+                Some(pat) => {
+                    return Err(format!(
+                        "Invalid pattern:\nExpected patterns that match unit type but got {pat:?}."
+                    ));
+                }
+            }
+        }
+
+        Ok(self)
     }
 
     /// Π ~>var Π', remove head variable and wildcard patterns from `self`.
@@ -118,20 +148,7 @@ impl Branches {
             match ps.pop_front() {
                 Some(Pattern::Var(_) | Pattern::Wildcard) => {}
                 None => {}
-                _ => panic!("unexpected pattern when expanding var patterns"),
-            }
-        }
-
-        self
-    }
-
-    /// Π ~>1 Π', remove head variable, wildcard, and unit patterns patterns from `self`.
-    pub fn expand_unit_pats(mut self) -> Self {
-        for Branch(ps, _) in &mut self.0 {
-            match ps.pop_front() {
-                Some(Pattern::Var(_) | Pattern::Wildcard | Pattern::Unit) => {}
-                None => {}
-                _ => panic!("unexpected pattern when expanding unit patterns"),
+                _ => panic!("all other patterns should be checked before this one"),
             }
         }
 
